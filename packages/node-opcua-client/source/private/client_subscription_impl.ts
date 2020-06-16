@@ -21,15 +21,21 @@ import {
     DataChangeNotification,
     DeleteMonitoredItemsResponse,
     DeleteSubscriptionsResponse,
-    EventNotificationList,
     MonitoredItemCreateRequestOptions,
     MonitoredItemCreateResult,
     MonitoringParametersOptions,
     NotificationMessage,
-    StatusChangeNotification
+    StatusChangeNotification,
+    NotificationData,
+    EventNotificationList
 } from "node-opcua-service-subscription";
+
 import { StatusCode, StatusCodes } from "node-opcua-status-code";
+import { Callback, ErrorCallback } from "node-opcua-status-code";
 import * as utils from "node-opcua-utils";
+import { promoteOpaqueStructure } from "node-opcua-client-dynamic-extension-object";
+import { DataType, Variant } from "node-opcua-variant";
+import { IBasicSession } from "node-opcua-pseudo-session";
 
 import { ClientMonitoredItemBase } from "../client_monitored_item_base";
 import { ClientMonitoredItemGroup } from "../client_monitored_item_group";
@@ -40,7 +46,6 @@ import {
     ClientSubscription,
     ClientSubscriptionOptions
 } from "../client_subscription";
-import { Callback, ErrorCallback } from "../common";
 import { ClientMonitoredItemGroupImpl } from "./client_monitored_item_group_impl";
 import { ClientMonitoredItemImpl } from "./client_monitored_item_impl";
 import { ClientSidePublishEngine } from "./client_publish_engine";
@@ -53,6 +58,38 @@ const warningLog = debugLog;
 const PENDING_SUBSCRIPTON_ID = 0xC0CAC01A;
 const TERMINTATED_SUBSCRIPTION_ID = 0xC0CAC01B;
 const TERMINATING_SUBSCRIPTION_ID = 0xC0CAC01C;
+
+async function promoteOpaqueStructureInNotificationData(session: IBasicSession, notificationData: NotificationData[]): Promise<void> {
+
+    const dataValuesToPromote: { value: Variant }[] = [];
+    for (const notification of notificationData) {
+        if (!notification) {
+            continue;
+        }
+        if (notification instanceof DataChangeNotification) {
+            if (notification.monitoredItems) {
+                for (const monitoredItem of notification.monitoredItems) {
+                    if (monitoredItem.value.value && monitoredItem.value.value.dataType === DataType.ExtensionObject) {
+                        dataValuesToPromote.push(monitoredItem.value);
+                    }
+                }
+            }
+        } else if (notification instanceof EventNotificationList) {
+            if (notification.events) {
+                for (const events of notification.events) {
+                    if (events.eventFields) {
+                        for (const eventField of events.eventFields) {
+                            if (eventField.dataType === DataType.ExtensionObject) {
+                                dataValuesToPromote.push({ value: eventField });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    await promoteOpaqueStructure(session, dataValuesToPromote);
+}
 
 export class ClientSubscriptionImpl extends EventEmitter implements ClientSubscription {
 
@@ -737,7 +774,7 @@ export class ClientSubscriptionImpl extends EventEmitter implements ClientSubscr
 
         this.emit("raw_notification", notificationMessage);
 
-        const notificationData = notificationMessage.notificationData || [];
+        const notificationData = (notificationMessage.notificationData || []) as NotificationData[];
 
         if (notificationData.length === 0) {
             // this is a keep alive message
@@ -758,31 +795,32 @@ export class ClientSubscriptionImpl extends EventEmitter implements ClientSubscr
             this.emit("received_notifications", notificationMessage);
             // let publish a global event
 
-            // now process all notifications
-            for (const notification of notificationData) {
+            promoteOpaqueStructureInNotificationData(this.session, notificationData).then(() => {
+                // now process all notifications
+                for (const notification of notificationData) {
 
-                if (!notification) {
-                    continue;
-                }
+                    if (!notification) {
+                        continue;
+                    }
 
-                // DataChangeNotification / StatusChangeNotification / EventNotification
-                switch (notification.schema.name) {
-                    case "DataChangeNotification":
-                        // now inform each individual monitored item
-                        this.__on_publish_response_DataChangeNotification(notification as DataChangeNotification);
-                        break;
-                    case "StatusChangeNotification":
-                        this.__on_publish_response_StatusChangeNotification(notification as StatusChangeNotification);
-                        break;
-                    case "EventNotificationList":
-                        this.__on_publish_response_EventNotificationList(notification as EventNotificationList);
-                        break;
-                    default:
-                        warningLog(" Invalid notification :", notification.toString());
+                    // DataChangeNotification / StatusChangeNotification / EventNotification
+                    switch (notification.schema.name) {
+                        case "DataChangeNotification":
+                            // now inform each individual monitored item
+                            this.__on_publish_response_DataChangeNotification(notification as DataChangeNotification);
+                            break;
+                        case "StatusChangeNotification":
+                            this.__on_publish_response_StatusChangeNotification(notification as StatusChangeNotification);
+                            break;
+                        case "EventNotificationList":
+                            this.__on_publish_response_EventNotificationList(notification as EventNotificationList);
+                            break;
+                        default:
+                            warningLog(" Invalid notification :", notification.toString());
+                    }
                 }
-            }
+            });
         }
-
     }
 
     private _terminate_step2(callback: (err?: Error) => void) {

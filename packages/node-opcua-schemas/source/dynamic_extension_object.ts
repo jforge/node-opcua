@@ -199,36 +199,20 @@ function initializeFields(thisAny: any, options: any, schema: StructuredTypeSche
         }
         initializeField(field, thisAny, options, schema, factory);
     }
-
 }
-function encodeFields(thisAny: any, schema: StructuredTypeSchema, stream: OutputBinaryStream) {
 
+function hasOptionalFieldsF(schema: StructuredTypeSchema): boolean {
+    if (schema.bitFields && schema.bitFields.length > 0) {
+        return true;
+    }
+    return (schema._baseSchema ? hasOptionalFieldsF(schema._baseSchema) : false);
+}
+
+function _internal_encodeFields(thisAny: any, schema: StructuredTypeSchema, stream: OutputBinaryStream) {
     // encodeFields base class first
     if (schema._baseSchema && schema._baseSchema.fields.length) {
-        encodeFields(thisAny, schema._baseSchema!, stream);
+        _internal_encodeFields(thisAny, schema._baseSchema!, stream);
     }
-
-    const hasOptionalFields = schema.bitFields && schema.bitFields.length > 0;
-    // ============ Deal with switchBits
-    if (hasOptionalFields) {
-
-        let bitField = 0;
-
-        for (const field of schema.fields) {
-
-            if (field.switchBit === undefined) {
-                continue;
-            }
-            if ((thisAny)[field.name] === undefined) {
-                continue;
-            }
-            // tslint:disable-next-line:no-bitwise
-            bitField |= (1 << field.switchBit);
-        }
-        // write
-        stream.writeUInt32(bitField);
-    }
-
     for (const field of schema.fields) {
 
         // ignore
@@ -249,27 +233,58 @@ function encodeFields(thisAny: any, schema: StructuredTypeSchema, stream: Output
                 throw new Error("Invalid category " + field.category + " " + FieldCategory[field.category]);
         }
     }
-
 }
-function decodeFields(
+interface BitfieldOffset {
+    bitField: number;
+    offset: number;
+    allOptional: boolean;
+}
+function makeBitField(thisAny: any, schema: StructuredTypeSchema, bo: BitfieldOffset): BitfieldOffset {
+
+    // tslint:disable-next-line: prefer-const
+    let { bitField, offset, allOptional } = schema._baseSchema ? makeBitField(thisAny, schema._baseSchema, bo) : bo;
+    let nbOptionalFields = 0;
+    for (const field of schema.fields) {
+        if (field.switchBit === undefined) {
+            allOptional = false;
+            continue;
+        }
+        nbOptionalFields += 1;
+        if ((thisAny)[field.name] === undefined) {
+            continue;
+        }
+        // tslint:disable-next-line:no-bitwise
+        bitField |= (1 << (field.switchBit + offset));
+
+    }
+    return { bitField, offset: nbOptionalFields + offset, allOptional };
+}
+function encodeFields(thisAny: any, schema: StructuredTypeSchema, stream: OutputBinaryStream) {
+
+    const hasOptionalFields = hasOptionalFieldsF(schema);
+    // ============ Deal with switchBits
+    if (hasOptionalFields) {
+        const { bitField, allOptional } = makeBitField(thisAny, schema, { bitField: 0, offset: 0, allOptional: true });
+        if (!(bitField === 0 && allOptional)) {
+            stream.writeUInt32(bitField);
+        }
+    }
+
+    _internal_encodeFields(thisAny, schema, stream);
+}
+
+function internal_decodeFields(
     thisAny: any,
+    bitField: number,
+    hasOptionalFields: boolean,
     schema: StructuredTypeSchema,
     stream: BinaryStream,
     factory: DataTypeFactory
 ) {
-
     // encodeFields base class first
     if (schema._baseSchema && schema._baseSchema.fields.length) {
-        decodeFields(thisAny, schema._baseSchema!, stream, factory);
+        internal_decodeFields(thisAny, bitField, hasOptionalFields, schema._baseSchema, stream, factory);
     }
-
-    // ============ Deal with switchBits
-    const hasOptionalFields = schema.bitFields && schema.bitFields.length > 0;
-    let bitField = 0;
-    if (hasOptionalFields) {
-        bitField = stream.readUInt32();
-    }
-
     for (const field of schema.fields) {
 
         // ignore fields that have a switch bit when bit is not set
@@ -299,6 +314,24 @@ function decodeFields(
                 throw new Error("Invalid category " + field.category + " " + FieldCategory[field.category]);
         }
     }
+
+}
+
+function decodeFields(
+    thisAny: any,
+    schema: StructuredTypeSchema,
+    stream: BinaryStream,
+    factory: DataTypeFactory
+) {
+
+    // ============ Deal with switchBits
+    const hasOptionalFields = hasOptionalFieldsF(schema);
+    let bitField = 0;
+    if (hasOptionalFields && (stream.buffer.length - stream.length) > 0) {
+        bitField = stream.readUInt32();
+    }
+
+    internal_decodeFields(thisAny, bitField, hasOptionalFields, schema, stream, factory);
 }
 
 function ___fieldToJson(field: FieldType, value: any): any {
@@ -482,7 +515,7 @@ class UnionBaseClass extends BaseUAObject {
         }
         if (!uniqueFieldHasBeenFound) {
             if (Object.keys(options).length === 0) {
-                (this as any)[switchFieldName] = 0xFFFFFFFF;
+                (this as any)[switchFieldName] = 0x00;
                 return;
             }
             const r = schema.fields.filter((f) => f.switchValue !== undefined).map((f) => f.name).join(" , ");
@@ -504,7 +537,7 @@ class UnionBaseClass extends BaseUAObject {
         const switchFieldName = this.schema.fields[0].name;
         const switchValue = (this as any)[switchFieldName];
         if (typeof switchValue !== "number") {
-            throw new Error("Invalid switchValue  " + switchValue);
+            throw new Error("Invalid switchValue  " + switchFieldName + " value = " + switchValue);
         }
         stream.writeUInt32(switchValue);
 
@@ -529,7 +562,6 @@ class UnionBaseClass extends BaseUAObject {
     }
 
     public decode(stream: BinaryStream): void {
-
         const factory: DataTypeFactory = (this.schema as any).$$factory;
 
         const switchValue = stream.readUInt32();
@@ -650,17 +682,23 @@ export function createDynamicObjectConstructor(
     ) {
 
         try {
-            BaseClass = getOrCreateConstructor(schema.baseType, dataTypeFactory);
-            if (!BaseClass) {
-                throw new Error("Cannot find base class : " + schema.baseType);
+            const baseSchema = dataTypeFactory.getStructuredTypeSchema(schema.baseType);
+            schema._baseSchema = baseSchema;
+            if (baseSchema.encodingDefaultBinary?.value === 0) {
+                // is abstract
+            } else {
+                BaseClass = getOrCreateConstructor(schema.baseType, dataTypeFactory);
+                if (!BaseClass) {
+                    throw new Error("Cannot find base class : " + schema.baseType);
+                }
+                if ((BaseClass as any).possibleFields) {
+                    possibleFields = (BaseClass as any).possibleFields.concat(possibleFields);
+                }
+                schema._baseSchema = BaseClass.schema;
             }
-            if ((BaseClass as any).possibleFields) {
-                possibleFields = (BaseClass as any).possibleFields.concat(possibleFields);
-            }
-            schema._baseSchema = BaseClass.schema;
 
         } catch (err) {
-            console.log("createDynamicObjectConstructor err= ", err.message);
+            // xx console.log("createDynamicObjectConstructor err= ", err.message);
         }
     }
 
@@ -684,6 +722,12 @@ export function createDynamicObjectConstructor(
             return pojo;
         }
 
+        public encode(stream: BinaryStream) {
+            super.encode(stream);
+        }
+        public decode(stream: BinaryStream): void {
+            super.decode(stream);
+        }
     }
 
     // to do : may be remove DataType suffix here ?

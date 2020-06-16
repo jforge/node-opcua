@@ -1,22 +1,23 @@
 {
     "name": "node-opcua-object-registry",
-    "version": "2.5.0-alpha.4",
+    "version": "2.6.1",
     "description": "pure nodejs OPCUA SDK - module -object-registry",
     "main": "./dist/index.js",
     "scripts": {
         "build": "tsc -b",
+        "clean": "node -e \"require('rimraf').sync('dist');\"",
         "test": "mocha test"
     },
     "author": "Etienne Rossignon",
     "license": "MIT",
     "dependencies": {
-        "node-opcua-assert": "^2.5.0-alpha.4",
-        "node-opcua-debug": "^2.5.0-alpha.4",
-        "underscore": "^1.9.2"
+        "node-opcua-assert": "^2.6.1",
+        "node-opcua-debug": "^2.6.1",
+        "underscore": "^1.10.2"
     },
     "devDependencies": {
         "colors": "^1.4.0",
-        "should": "13.2.3"
+        "should": "^13.2.3"
     },
     "repository": {
         "type": "git",

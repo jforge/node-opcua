@@ -2,7 +2,7 @@
 import * as fs from "fs";
 import * as nodesets from "node-opcua-nodesets";
 import * as should from "should";
-import { AddressSpace, generateAddressSpace, SessionContext } from "../..";
+import { AddressSpace, generateAddressSpace } from "../../source";
 
 import { utest_acknowledgeable_condition } from "./utest_acknowledgeable_condition";
 import { utest_alarm_condition } from "./utest_alarm_condition";
@@ -41,8 +41,9 @@ describe("AddressSpace : Conditions ", function (this: any) {
 
         const green = namespace.addObject({
             browseName: "Green",
+            eventNotifier: 0x1,
             notifierOf: addressSpace.rootFolder.objects.server,
-            organizedBy: addressSpace.rootFolder.objects
+            organizedBy: addressSpace.rootFolder.objects,
         });
 
         source = namespace.addObject({

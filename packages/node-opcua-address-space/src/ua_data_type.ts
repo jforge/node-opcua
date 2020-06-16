@@ -26,11 +26,18 @@ import * as  tools from "./tool_isSupertypeOf";
 import { get_subtypeOf } from "./tool_isSupertypeOf";
 import { get_subtypeOfObj } from "./tool_isSupertypeOf";
 import { UAObject } from "./ua_object";
+import { StructuredTypeSchema } from "node-opcua-factory";
 
-type ExtensionObjectConstructor = new (options: any) => ExtensionObject;
+export type ExtensionObjectConstructor = new (options: any) => ExtensionObject;
+export interface ExtensionObjectConstructorFuncWithSchema extends ExtensionObjectConstructor {
+    schema: StructuredTypeSchema;
+    possibleFields: string[];
+    encodingDefaultBinary: ExpandedNodeId;
+    encodingDefaultXml: ExpandedNodeId;
+}
 
 export interface UADataType {
-    _extensionObjectConstructor: ExtensionObjectConstructor;
+    _extensionObjectConstructor: ExtensionObjectConstructorFuncWithSchema;
 }
 
 export interface IEnumItem {
@@ -241,11 +248,30 @@ export class UADataType extends BaseNode implements UADataTypePublic {
     }
 
     public _getDefinition(): DataTypeDefinition | null {
+
+        if (!this.$definition) {
+            const structure = this.addressSpace.findDataType("Structure")!;
+            if (!structure) {
+                return null;
+            }
+            if (this.isSupertypeOf(structure)) {
+                // <Definition> tag was missing in XML file as it was empty
+                this.$definition = new StructureDefinition({});
+            }
+        }
         // from OPC Unified Architecture, Part 6 86 Release 1.04
         //  A DataTypeDefinition defines an abstract representation of a UADataType that can be used by
         //  design tools to automatically create serialization code. The fields in the DataTypeDefinition type
         //  are defined in Table F.12.
-        return this.$definition || null;
+        const _definition = this.$definition || null;
+        if (_definition && _definition instanceof StructureDefinition && this.binaryEncodingNodeId) {
+            _definition.defaultEncodingId = this.binaryEncodingNodeId!;
+            const subtype = this.subtypeOf;
+            if (subtype) {
+                _definition.baseDataType = subtype;
+            }
+        }
+        return _definition;
     }
 
     public install_extra_properties() {

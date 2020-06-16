@@ -32,7 +32,7 @@ import {
     SessionSecurityDiagnosticsDataType,
     SubscriptionDiagnosticsDataType
 } from "node-opcua-common";
-import { QualifiedName } from "node-opcua-data-model";
+import { QualifiedName, makeAccessLevelFlag } from "node-opcua-data-model";
 import { NodeClass } from "node-opcua-data-model";
 import { checkDebugFlag, make_debugLog } from "node-opcua-debug";
 import { makeNodeId, NodeId, NodeIdType, sameNodeId } from "node-opcua-nodeid";
@@ -190,6 +190,10 @@ export class ServerSession extends EventEmitter implements ISubscriber, ISession
         this._registeredNodesInv = {};
     }
 
+    public getSessionId(): NodeId {
+        return this.nodeId;
+    }
+
     public dispose() {
 
         debugLog("ServerSession#dispose()");
@@ -275,9 +279,15 @@ export class ServerSession extends EventEmitter implements ISubscriber, ISession
             // note : https://opcfoundation-onlineapplications.org/mantis/view.php?id=4111
             // sessionDiagnostics extension object uses a different spelling
             // here with an S !!!!
-            this._sessionDiagnostics.currentMonitoredItemsCount = this.currentMonitoredItemCount;
-            this._sessionDiagnostics.currentSubscriptionsCount = this.currentSubscriptionCount;
-            this._sessionDiagnostics.currentPublishRequestsInQueue = this.currentPublishRequestInQueue;
+            if (this._sessionDiagnostics.currentMonitoredItemsCount !== this.currentMonitoredItemCount) {
+                this._sessionDiagnostics.currentMonitoredItemsCount = this.currentMonitoredItemCount;
+            }
+            if (this._sessionDiagnostics.currentSubscriptionsCount !== this.currentSubscriptionCount) {
+                this._sessionDiagnostics.currentSubscriptionsCount = this.currentSubscriptionCount;
+            }
+            if (this._sessionDiagnostics.currentPublishRequestsInQueue !== this.currentPublishRequestInQueue) {
+                this._sessionDiagnostics.currentPublishRequestsInQueue = this.currentPublishRequestInQueue;
+            }
         }
     }
 
@@ -640,6 +650,7 @@ export class ServerSession extends EventEmitter implements ISubscriber, ISession
                 " no serverDiagnostics.sessionsDiagnosticsSummary");
             return false;
         }
+
 
         const sessionDiagnosticsObjectType = this.addressSpace.findObjectType("SessionDiagnosticsObjectType");
 

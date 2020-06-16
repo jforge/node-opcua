@@ -6,6 +6,7 @@ import { EventEmitter } from "events";
 import * as _ from "underscore";
 
 import { assert } from "node-opcua-assert";
+import { AggregateFunction } from "node-opcua-aggregates"
 import { DateTime } from "node-opcua-basic-types";
 import {
     ExtraDataTypeManager,
@@ -27,7 +28,6 @@ import {
     AnyConstructorFunc,
 } from "node-opcua-schemas";
 import {
-    ErrorCallback,
     requestHandleNotSetValue,
     SignatureData
 } from "node-opcua-secure-channel";
@@ -51,7 +51,9 @@ import {
     HistoryReadRequest,
     HistoryReadResponse,
     HistoryReadResult,
-    ReadRawModifiedDetails
+    ReadRawModifiedDetails,
+    ReadProcessedDetails,
+
 } from "node-opcua-service-history";
 import {
     QueryFirstRequest,
@@ -108,11 +110,16 @@ import {
 } from "node-opcua-service-write";
 import {
     StatusCode,
-    StatusCodes
+    StatusCodes,
+    Callback
+} from "node-opcua-status-code";
+import {
+    ErrorCallback,
 } from "node-opcua-status-code";
 import {
     BrowseNextRequest,
-    BrowseNextResponse
+    BrowseNextResponse,
+    HistoryReadValueIdOptions
 } from "node-opcua-types";
 import {
     buffer_ellipsis,
@@ -127,7 +134,7 @@ import {
     VariantLike
 } from "node-opcua-variant";
 
-import { DataTypeFactory, getStandartDataTypeFactory, StructuredTypeSchema } from "node-opcua-factory";
+import { DataTypeFactory, getStandardDataTypeFactory, StructuredTypeSchema } from "node-opcua-factory";
 import {
     ArgumentDefinition,
     BrowseDescriptionLike,
@@ -151,7 +158,7 @@ import {
 } from "../client_session";
 import { ClientSessionKeepAliveManager } from "../client_session_keepalive_manager";
 import { ClientSubscription } from "../client_subscription";
-import { Callback, Request, Response } from "../common";
+import { Request, Response } from "../common";
 import { ClientSidePublishEngine } from "./client_publish_engine";
 import { ClientSubscriptionImpl } from "./client_subscription_impl";
 import { OPCUAClientImpl } from "./opcua_client_impl";
@@ -777,6 +784,120 @@ export class ClientSessionImpl extends EventEmitter implements ClientSession {
     }
 
     /**
+     * @method readAggregateValue
+     * @async
+     *
+     * @example
+     *
+     * ```javascript
+     * //  es5
+     * session.readAggregateValue(
+     *   "ns=5;s=Simulation Examples.Functions.Sine1",
+     *   "2015-06-10T09:00:00.000Z",
+     *   "2015-06-10T09:01:00.000Z", 'Average', 3600000, function(err,dataValues) {
+     *
+     * });
+     * ```
+     *
+     * ```javascript
+     * //  es6
+     * const dataValues = await session.readAggregateValue(
+     *   "ns=5;s=Simulation Examples.Functions.Sine1",
+     *   "2015-06-10T09:00:00.000Z",
+     *   "2015-06-10T09:01:00.000Z", 'Average', 3600000);
+     * ```
+     * @param nodes   the read value id
+     * @param startTime   the start time in UTC format
+     * @param endTime     the end time in UTC format
+     * @param aggregateFn
+     * @param processingInterval in milliseconds
+     * @param callback
+     */
+    public readAggregateValue(
+        nodes: HistoryReadValueIdOptions[],
+        startTime: DateTime,
+        endTime: DateTime,
+        aggregateFn: AggregateFunction,
+        processingInterval: number,
+        callback: Callback<HistoryReadResult[]>
+    ): void;
+    public async readAggregateValue(
+        nodes: HistoryReadValueIdOptions[],
+        startTime: DateTime,
+        endTime: DateTime,
+        aggregateFn: AggregateFunction,
+        processingInterval: number,
+    ): Promise<HistoryReadResult[]>;
+    public readAggregateValue(
+        nodes: HistoryReadValueIdOptions,
+        startTime: DateTime,
+        endTime: DateTime,
+        aggregateFn: AggregateFunction,
+        processingInterval: number,
+        callback: Callback<HistoryReadResult>
+    ): void;
+    public async readAggregateValue(
+        nodes: HistoryReadValueIdOptions,
+        startTime: DateTime,
+        endTime: DateTime,
+        aggregateFn: AggregateFunction,
+        processingInterval: number,
+    ): Promise<HistoryReadResult>;
+
+    public readAggregateValue(
+        arg0: HistoryReadValueIdOptions[] | HistoryReadValueIdOptions,
+        startTime: DateTime,
+        endTime: DateTime,
+        aggregateFn: AggregateFunction,
+        processingInterval: number, ...args: any[]): any {
+
+        const callback = args[0];
+        assert(_.isFunction(callback));
+
+        const isArray = _.isArray(arg0);
+
+        const nodesToRead: HistoryReadValueIdOptions[] = isArray ? arg0 as HistoryReadValueIdOptions[] : [arg0 as HistoryReadValueIdOptions];
+
+        const readProcessedDetails = new ReadProcessedDetails({
+            aggregateType: [aggregateFn],
+            endTime,
+            processingInterval,
+            startTime,
+        });
+
+        const request = new HistoryReadRequest({
+            historyReadDetails: readProcessedDetails,
+            nodesToRead,
+            releaseContinuationPoints: false,
+            timestampsToReturn: TimestampsToReturn.Both
+        });
+
+        assert(nodesToRead.length === request.nodesToRead!.length);
+        this.performMessageTransaction(request, (err: Error | null, response) => {
+
+            /* istanbul ignore next */
+            if (err) {
+                return callback(err);
+            }
+
+            /* istanbul ignore next */
+            if (!response || !(response instanceof HistoryReadResponse)) {
+                return callback(new Error("Internal Error"));
+            }
+
+            if (response.responseHeader.serviceResult.isNot(StatusCodes.Good)) {
+                return callback(new Error(response.responseHeader.serviceResult.toString()));
+            }
+
+            response.results = response.results || /* istanbul ignore next */[];
+
+            assert(nodesToRead.length === response.results.length);
+
+            callback(null, isArray ? response.results : response.results[0]);
+        });
+    }
+
+    /**
      *
      * @method write
      * @param nodesToWrite {WriteValue[]}  - the array of value to write. One or more elements.
@@ -942,8 +1063,8 @@ export class ClientSessionImpl extends EventEmitter implements ClientSession {
 
     public writeSingleNode(...args: any[]): any {
 
-        const nodeId = args[0];
-        const value = args[1];
+        const nodeId = args[0] as NodeIdLike;
+        const value = args[1] as VariantLike;
         const callback = args[2];
 
         assert(_.isFunction(callback));
@@ -1511,7 +1632,7 @@ export class ClientSessionImpl extends EventEmitter implements ClientSession {
                 if (!pendingTransactionMessageDisplayed) {
                     pendingTransactionMessageDisplayed = true;
                     // tslint:disable-next-line: no-console
-                    console.log("Pending transations: ", privateThis.pendingTransactions.map((a: any) => a.request.constructor.name).join(" "));
+                    console.log("Pending transactions: ", privateThis.pendingTransactions.map((a: any) => a.request.constructor.name).join(" "));
                     // tslint:disable-next-line: no-console
                     console.log(chalk.yellow("Warning : your opcua client is sending multiple requests simultaneously to the server", request.constructor.name));
                     // tslint:disable-next-line: no-console
@@ -1944,7 +2065,7 @@ export class ClientSessionImpl extends EventEmitter implements ClientSession {
         this._keepAliveManager.on("failure", () => {
             /**
              * raised when a keep-alive request has failed on the session, may be the session has timeout
-             * unexpectidaly on the server side, may be the connection is broken.
+             * unexpectedly on the server side, may be the connection is broken.
              * @event keepalive_failure
              */
             this.emit("keepalive_failure");
@@ -1982,11 +2103,11 @@ export class ClientSessionImpl extends EventEmitter implements ClientSession {
         const now = Date.now();
         const lap1 = (now - this.lastRequestSentTime.getTime());
         const lap2 = now - this.lastResponseReceivedTime.getTime();
-        const timeoutDelai = this.timeout - lap1;
+        const timeoutDelay = this.timeout - lap1;
 
-        const timeoutInfo = timeoutDelai < 0
-            ? chalk.red(" expired since " + (-timeoutDelai / 1000) + " seconds")
-            : chalk.green(" timeout in " + timeoutDelai / 1000 + " seconds");
+        const timeoutInfo = timeoutDelay < 0
+            ? chalk.red(" expired since " + (-timeoutDelay / 1000) + " seconds")
+            : chalk.green(" timeout in " + timeoutDelay / 1000 + " seconds");
 
         let str = "";
         str += " name..................... " + this.name;
@@ -2143,7 +2264,7 @@ export class ClientSessionImpl extends EventEmitter implements ClientSession {
             dataTypeManager.setNamespaceArray(namespaceArray);
 
             for (let namespaceIndex = 1; namespaceIndex < namespaceArray.length; namespaceIndex++) {
-                const dataTypeFactory1 = new DataTypeFactory([getStandartDataTypeFactory()]);
+                const dataTypeFactory1 = new DataTypeFactory([getStandardDataTypeFactory()]);
                 dataTypeManager.registerDataTypeFactory(namespaceIndex, dataTypeFactory1);
             }
             await populateDataTypeManager(this, dataTypeManager);
@@ -2155,6 +2276,15 @@ export class ClientSessionImpl extends EventEmitter implements ClientSession {
         dataTypeNodeId: NodeId
     ): Promise<AnyConstructorFunc> {
 
+        const privateThis = this as any;
+
+        if (!privateThis.dataTypeConstructor) {
+            privateThis.dataTypeConstructor = {};
+        }
+        const c = privateThis.dataTypeConstructor[dataTypeNodeId.toString()];
+        if (c) {
+            return c as AnyConstructorFunc;
+        }
         await this.extractNamespaceDataType();
         const sessionPriv: any = this as any;
         if (!sessionPriv.$$extraDataTypeManager) {
@@ -2166,7 +2296,11 @@ export class ClientSessionImpl extends EventEmitter implements ClientSession {
         const schema = await getDataTypeDefinition(this, dataTypeNodeId, extraDataTypeManager);
 
         // now resolve it
-        return extraDataTypeManager.getExtensionObjectConstructorFromDataType(dataTypeNodeId);
+        const constructor = extraDataTypeManager.getExtensionObjectConstructorFromDataType(dataTypeNodeId);
+
+        // put it in cache
+        privateThis.dataTypeConstructor[dataTypeNodeId.toString()] = constructor;
+        return constructor;
     }
 
     /**
@@ -2304,8 +2438,8 @@ async function promoteOpaqueStructure3(
     // construct dataTypeManager if not already present
     const extraDataTypeManager = await getExtraDataTypeManager(session);
 
-    const promises: Array<Promise<void>> = callMethodResults.map(
-        async (x) => promoteOpaqueStructure2(session, x));
+    const promises: Promise<void>[] = callMethodResults.map(
+        async (x: CallMethodResult) => promoteOpaqueStructure2(session, x));
     await Promise.all(promises);
 }
 
@@ -2322,6 +2456,7 @@ ClientSessionImpl.prototype.browse = thenify.withCallback(ClientSessionImpl.prot
 ClientSessionImpl.prototype.browseNext = thenify.withCallback(ClientSessionImpl.prototype.browseNext, opts);
 ClientSessionImpl.prototype.readVariableValue = thenify.withCallback(ClientSessionImpl.prototype.readVariableValue, opts);
 ClientSessionImpl.prototype.readHistoryValue = thenify.withCallback(ClientSessionImpl.prototype.readHistoryValue, opts);
+ClientSessionImpl.prototype.readAggregateValue = thenify.withCallback(ClientSessionImpl.prototype.readAggregateValue, opts);
 ClientSessionImpl.prototype.write = thenify.withCallback(ClientSessionImpl.prototype.write, opts);
 ClientSessionImpl.prototype.writeSingleNode = thenify.withCallback(ClientSessionImpl.prototype.writeSingleNode, opts);
 ClientSessionImpl.prototype.readAllAttributes = thenify.withCallback(ClientSessionImpl.prototype.readAllAttributes, opts);

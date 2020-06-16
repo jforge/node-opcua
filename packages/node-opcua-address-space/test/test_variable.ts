@@ -14,6 +14,12 @@ import { StatusCode, StatusCodes } from "node-opcua-status-code";
 import { DataType } from "node-opcua-variant";
 import { Variant } from "node-opcua-variant";
 import { VariantArrayType } from "node-opcua-variant";
+import { NumericRange } from "node-opcua-numeric-range";
+import { WriteValue } from "node-opcua-types";
+import {
+    StatusCodeCallback,
+} from "node-opcua-status-code";
+
 const nodeset_filename = path.join(__dirname, "../test_helpers/test_fixtures/mini.Node.Set2.xml");
 
 import {
@@ -25,12 +31,9 @@ import {
     PseudoSession,
     RootFolder,
     SessionContext,
-    StatusCodeCallBack,
     UAVariable,
 } from "..";
 
-import { NumericRange } from "node-opcua-numeric-range";
-import { WriteValue } from "node-opcua-types";
 import { create_minimalist_address_space_nodeset } from "../";
 
 const context = SessionContext.defaultContext;
@@ -500,7 +503,7 @@ describe("testing Variable#bindVariable", () => {
             dataValueCheck1.statusCode.should.eql(StatusCodes.UncertainInitialValue);
 
             // call_refresh
-            await variable.asyncRefresh();
+            await variable.asyncRefresh(new Date());
 
             // read_simple_value_after_refresh
             const dataValueCheck2 = variable.readValue();
@@ -687,7 +690,7 @@ describe("testing Variable#bindVariable", () => {
                         callback(null, value_with_timestamp);
                     }, 100);
                 },
-                timestamped_set(dataValue1: DataValue, callback: StatusCodeCallBack): void {
+                timestamped_set(dataValue1: DataValue, callback: StatusCodeCallback): void {
                     setTimeout(() => {
                         value_with_timestamp.value = dataValue1.value;
                         value_with_timestamp.sourceTimestamp = dataValue1.sourceTimestamp;

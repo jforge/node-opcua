@@ -3,7 +3,7 @@
  * @module node-opcua-address-space
  */
 import { EventEmitter } from "events";
-import { Byte, ByteString, DateTime, Int64, UABoolean, UAString, UInt16, UInt32, UInt64 } from "node-opcua-basic-types";
+import { Byte, ByteString, DateTime, Int64, UABoolean, UAString, UInt16, UInt32, UInt64, Int32, Int16, SByte } from "node-opcua-basic-types";
 
 export type Duration = number;
 
@@ -28,7 +28,9 @@ import {
     ReadRawModifiedDetails
 } from "node-opcua-service-history";
 import { WriteValueOptions } from "node-opcua-service-write";
-import { StatusCode } from "node-opcua-status-code";
+import { StatusCode, } from "node-opcua-status-code";
+import { ErrorCallback, CallbackT } from "node-opcua-status-code";
+
 import {
     Argument,
     ArgumentOptions,
@@ -59,6 +61,8 @@ import {
     VariantByteString,
     VariantLike
 } from "node-opcua-variant";
+import { AnyConstructorFunc } from "node-opcua-schemas";
+
 import { MinimalistAddressSpace, Reference } from "../src/reference";
 import { State, StateMachine, StateMachineType, Transition, UtcTime } from "./interfaces/state_machine";
 import { SessionContext } from "./session_context";
@@ -74,7 +78,7 @@ import { UALimitAlarm } from "../src/alarms_and_conditions/ua_limit_alarm";
 import { UANonExclusiveDeviationAlarm } from "../src/alarms_and_conditions/ua_non_exclusive_deviation_alarm";
 import { UANonExclusiveLimitAlarm } from "../src/alarms_and_conditions/ua_non_exclusive_limit_alarm";
 
-export type ErrorCallback = (err?: Error) => void;
+import { StatusCodeCallback } from "node-opcua-status-code";
 
 export declare interface AddReferenceOpts {
     referenceType: string | NodeId | UAReferenceType;
@@ -93,6 +97,8 @@ export interface UAReference {
     readonly isForward: boolean;
 
     readonly node?: BaseNode;
+
+    toString(options?: { addressSpace?: AddressSpace }): string;
 }
 
 export declare function resolveReferenceType(
@@ -242,12 +248,10 @@ export interface BindVariableOptionsVariation1 {
 
 export type DataValueCallback = (err: Error | null, dataValue?: DataValue) => void;
 
-export type StatusCodeCallBack = (err: Error | null, statusCode?: StatusCode) => void;
-
 export type VariableDataValueGetterSync = () => DataValue;
 export type VariableDataValueGetterAsync = (callback: DataValueCallback) => void;
 
-export type VariableDataValueSetterWithCallback = (dataValue: DataValue, callback: StatusCodeCallBack) => void;
+export type VariableDataValueSetterWithCallback = (dataValue: DataValue, callback: StatusCodeCallback) => void;
 
 export interface BindVariableOptionsVariation2 {
     timestamped_get: VariableDataValueGetterSync | VariableDataValueGetterAsync;
@@ -256,25 +260,19 @@ export interface BindVariableOptionsVariation2 {
 }
 
 export interface BindVariableOptionsVariation3 {
-    refreshFunc: (callback: DataValueCallback) => void;
+    refreshFunc?: (callback: DataValueCallback) => void;
     historyRead?: any;
 }
 
 export type BindVariableOptions =
-    | {
-        historyRead?: any;
-    }
-    | BindVariableOptionsVariation1
+    BindVariableOptionsVariation1
     | BindVariableOptionsVariation2
     | BindVariableOptionsVariation3;
 
 export type ContinuationPoint = Buffer;
-export type Callback<T> = (err: Error | null, result?: T) => void;
 
 export interface VariableAttributes {
     dataType: NodeId;
-    accessLevel: number;
-    userAccessLevel: number;
     valueRank: number;
     minimumSamplingInterval: number;
 }
@@ -386,7 +384,7 @@ export interface UAVariable extends BaseNode, VariableAttributes, IPropertyAndCo
      *     and a multidimentional array is encoded as a one dimensional array.
      *
      */
-    arrayDimensions: UInt32[];
+    arrayDimensions: UInt32[] | null;
 
     /**
      * The `historizing` attribute indicates whether the server is actively collecting data for the
@@ -484,10 +482,10 @@ export interface UAVariable extends BaseNode, VariableAttributes, IPropertyAndCo
         context: SessionContext,
         dataValue: DataValueOptions,
         indexRange: string | NumericRange | null,
-        callback: StatusCodeCallBack
+        callback: StatusCodeCallback
     ): void;
 
-    writeValue(context: SessionContext, dataValue: DataValueOptions, callback: StatusCodeCallBack): void;
+    writeValue(context: SessionContext, dataValue: DataValueOptions, callback: StatusCodeCallback): void;
 
     writeValue(
         context: SessionContext,
@@ -495,9 +493,9 @@ export interface UAVariable extends BaseNode, VariableAttributes, IPropertyAndCo
         indexRange?: string | NumericRange | null
     ): Promise<StatusCode>;
 
-    asyncRefresh(callback: DataValueCallback): void;
+    asyncRefresh(oldestDate: Date, callback: DataValueCallback): void;
 
-    asyncRefresh(): Promise<DataValue>;
+    asyncRefresh(oldestDate: Date): Promise<DataValue>;
 
     /**
      * write a variale attribute (callback version)
@@ -524,7 +522,7 @@ export interface UAVariable extends BaseNode, VariableAttributes, IPropertyAndCo
      *  ```
      *
      */
-    writeAttribute(context: SessionContext, writeValue: WriteValueOptions, callback: StatusCodeCallBack): void;
+    writeAttribute(context: SessionContext, writeValue: WriteValueOptions, callback: StatusCodeCallback): void;
     /**
      * write a variale attribute (async/await version)
      * @param context
@@ -560,7 +558,7 @@ export interface UAVariable extends BaseNode, VariableAttributes, IPropertyAndCo
 
     setPermissions(permissions: Permissions): void;
 
-    bindVariable(options: BindVariableOptions, overwrite?: boolean): void;
+    bindVariable(options: BindVariableOptions | VariantLike, overwrite?: boolean): void;
 
     bindExtensionObject(optionalExtensionObject?: ExtensionObject): ExtensionObject | null;
 
@@ -578,7 +576,7 @@ export interface UAVariable extends BaseNode, VariableAttributes, IPropertyAndCo
         indexRange: NumericRange | null,
         dataEncoding: QualifiedNameLike | null,
         continuationPoint: ContinuationPoint | null,
-        callback: Callback<HistoryReadResult>
+        callback: CallbackT<HistoryReadResult>
     ): void;
 
     clone(options?: any, optionalFilter?: any, extraInfo?: any): UAVariable;
@@ -594,7 +592,11 @@ export interface UAVariable extends BaseNode, VariableAttributes, IPropertyAndCo
     once(eventName: "value_changed", eventHandler: (dataValue: DataValue) => void): this;
 }
 
-export interface AddDataItemOptions extends AddVariableOptions {
+export interface AddDataItemOptions extends AddVariableOptionsWithoutValue {
+
+    arrayType?: VariantArrayType;
+    value?: VariantLike | BindVariableOptions;
+
     /** @example  "(tempA -25) + tempB" */
     definition?: string;
     /** @example 0.5 */
@@ -607,6 +609,9 @@ export interface UADataItem extends UAVariable {
 }
 
 export interface AddAnalogDataItemOptions extends AddDataItemOptions {
+
+    value?: VariantLike | BindVariableOptions;
+
     engineeringUnitsRange?: {
         low: number;
         high: number;
@@ -655,7 +660,7 @@ export interface EnumValueTypeOptionsLike {
     description?: LocalizedTextLike | null;
 }
 
-export interface AddMultiStateValueDiscreteOptions extends AddVariableOptions {
+export interface AddMultiStateValueDiscreteOptions extends AddVariableOptionsWithoutValue {
     enumValues: EnumValueTypeOptionsLike[] | { [key: string]: number };
     value?: number | Int64;
 }
@@ -687,6 +692,15 @@ export interface PseudoVariantBoolean {
     dataType: "Boolean" | DataType.Boolean;
     value: boolean;
 }
+export interface PseudoVariantDouble {
+    dataType: "Double" | DataType.Double;
+    value: number;
+}
+
+export interface PseudoVariantFloat {
+    dataType: "Float" | DataType.Float;
+    value: number;
+}
 
 export interface PseudoVariantNodeId {
     dataType: "NodeId" | DataType.NodeId;
@@ -696,6 +710,26 @@ export interface PseudoVariantNodeId {
 export interface PseudoVariantUInt32 {
     dataType: "UInt32" | DataType.UInt32;
     value: UInt32;
+}
+export interface PseudoVariantUInt16 {
+    dataType: "UInt16" | DataType.UInt16;
+    value: UInt16;
+}
+export interface PseudoVariantByte {
+    dataType: "UInt8" | DataType.Byte;
+    value: Byte;
+}
+export interface PseudoVariantInt32 {
+    dataType: "Int32" | DataType.UInt32;
+    value: Int32;
+}
+export interface PseudoVariantInt16 {
+    dataType: "Int16" | DataType.UInt16;
+    value: Int16;
+}
+export interface PseudoVariantSByte {
+    dataType: "SByte" | DataType.SByte;
+    value: SByte;
 }
 
 export interface PseudoVariantDateTime {
@@ -729,10 +763,21 @@ export interface PseudoVariantExtensionObject {
 }
 
 export interface PseudoVariantExtensionObjectArray {
-    dataType: "ExtensionObject";
+    dataType: "ExtensionObject" | DataType.ExtensionObject;
     arrayType: VariantArrayType.Array;
     value: object[];
 }
+
+export type PseudoVariantNumber =
+    | PseudoVariantUInt32
+    | PseudoVariantUInt16
+    | PseudoVariantByte
+    | PseudoVariantInt32
+    | PseudoVariantInt16
+    | PseudoVariantSByte
+    | PseudoVariantDouble
+    | PseudoVariantFloat
+    ;
 
 export type PseudoVariant =
     | PseudoVariantNull
@@ -744,7 +789,7 @@ export type PseudoVariant =
     | PseudoVariantDuration
     | PseudoVariantLocalizedText
     | PseudoVariantStatusCode
-    | PseudoVariantUInt32
+    | PseudoVariantNumber
     | PseudoVariantExtensionObject
     | PseudoVariantExtensionObjectArray;
 
@@ -837,6 +882,9 @@ export declare class UAMethod extends BaseNode {
     public execute(inputArguments: null | VariantLike[], context: SessionContext): Promise<CallMethodResultOptions>;
 
     public clone(options: any, optionalFilter?: any, extraInfo?: any): UAMethod;
+
+    public isBound(): boolean;
+
 }
 
 export interface UADataType extends BaseNode {
@@ -882,6 +930,14 @@ export interface InstantiateOptions {
     description?: LocalizedTextLike;
 
     /**
+     * an optional displayName
+     *
+     * if not provided the default description of the corresponding browseName
+     * will be used.
+     */
+    displayName?: LocalizedTextLike | null;
+
+    /**
      * the parent Folder holding this object
      *
      * note
@@ -925,11 +981,12 @@ export interface InstantiateOptions {
 }
 
 export interface InstantiateVariableOptions extends InstantiateOptions {
-    arrayDimensions?: number[];
+    arrayDimensions?: number[] | null;
     dataType?: any;
     extensionObject?: any;
     nodeId?: NodeIdLike;
     minimumSamplingInterval?: number;
+    propertyOf?: NodeIdLike | UAObject | UAObjectType | UAVariable | UAVariableType | UAMethod;
     value?: any;
     valueRank?: number;
 }
@@ -968,11 +1025,9 @@ export declare class UAVariableType extends BaseNode implements VariableAttribut
     public readonly subtypeOf: NodeId | null;
 
     public dataType: NodeId;
-    public accessLevel: number;
-    public userAccessLevel: number;
     public valueRank: number;
     public minimumSamplingInterval: number;
-    public arrayDimensions: number[];
+    public arrayDimensions: UInt32[] | null;
     public historizing: boolean;
 
     public isAbstract: boolean;
@@ -1022,7 +1077,7 @@ export enum EUEngineeringUnit {
     // to be continued
 }
 
-export type ModellingRuleType = "Mandatory" | "Optional" | null;
+export type ModellingRuleType = "Mandatory" | "Optional" | "MandatoryPlaceholder" | "OptionalPlaceholder" | "ExposesItsArray" | null;
 
 export interface AddBaseNodeOptions {
     browseName: QualifiedNameLike;
@@ -1085,7 +1140,7 @@ export interface VariableStuff {
      *     Note that the maximum length of an array transferred on the wire is 2147483647 (max Int32)
      *     and a multi-dimensional array is encoded as a one dimensional array.
      */
-    arrayDimensions?: UInt32[];
+    arrayDimensions?: UInt32[] | null;
 
     /**
      * The AccessLevel Attribute is used to indicate how the Value of a Variable can be accessed
@@ -1122,7 +1177,7 @@ export interface VariableStuff {
      */
     historizing?: boolean;
 
-    dataValue?: DataValue;
+    dataValue?: DataValueOptions;
 }
 
 export interface AddVariableTypeOptions extends AddBaseNodeOptions, VariableStuff {
@@ -1135,14 +1190,16 @@ export interface AddVariableTypeOptions extends AddBaseNodeOptions, VariableStuf
     value?: VariantLike;
 }
 
-export interface AddVariableOptions extends AddBaseNodeOptions, VariableStuff {
+export interface AddVariableOptionsWithoutValue extends AddBaseNodeOptions, VariableStuff {
+    permissions?: Permissions;
+}
+export interface AddVariableOptions extends AddVariableOptionsWithoutValue {
     /**
      * permissions
      */
     // default value is "BaseVariableType";
     typeDefinition?: string | NodeId | UAVariableType;
-    permissions?: Permissions;
-    value?: VariantLike | BindVariableOptions | number | Int64;
+    value?: VariantLike | BindVariableOptions;
     postInstantiateFunc?: (node: UAVariable) => void;
 }
 
@@ -1184,20 +1241,20 @@ export interface AddMethodOptions {
     browseName: QualifiedNameLike;
     displayName?: LocalizedTextLike;
     description?: LocalizedTextLike;
-    inputArguments: ArgumentOptions[];
+    inputArguments?: ArgumentOptions[];
     modellingRule?: ModellingRuleType;
-    outputArguments: ArgumentOptions[];
+    outputArguments?: ArgumentOptions[];
     componentOf?: NodeIdLike | BaseNode;
     executable?: boolean;
     userExecutable?: boolean;
 }
 
 export interface AddMultiStateDiscreteOptions extends AddBaseNodeOptions, VariableStuff {
-    value?: number;
     enumStrings: string[]; // default value is "BaseVariableType";
     typeDefinition?: string | NodeId | UAVariableType;
     permissions?: Permissions;
     postInstantiateFunc?: (node: UAVariable) => void;
+    value?: number;
 }
 
 export interface AddReferenceTypeOptions extends AddBaseNodeOptions {
@@ -1206,12 +1263,14 @@ export interface AddReferenceTypeOptions extends AddBaseNodeOptions {
     subtypeOf?: string | NodeId | UAReferenceType;
 }
 
-export interface AddTwoStateVariableOptions extends AddVariableOptions {
+export interface AddTwoStateVariableOptions extends AddVariableOptionsWithoutValue {
     falseState?: string;
     trueState?: string;
     optionals?: string[];
     isFalseSubStateOf?: NodeIdLike | BaseNode;
     isTrueSubStateOf?: NodeIdLike | BaseNode;
+
+    value?: boolean;
 }
 
 export interface CreateDataTypeOptions extends AddBaseNodeOptions {
@@ -1483,7 +1542,7 @@ export interface UASessionDiagnosticsSummary extends UAObject {
 
 export interface UAServerDiagnostics extends UAObject {
     sessionsDiagnosticsSummary: UASessionDiagnosticsSummary;
-
+    enabledFlag: UAVariableT<boolean, DataType.Boolean>;
     bindExtensionObject(obj: UAServerDiagnosticsSummary): UAServerDiagnosticsSummary;
 }
 
@@ -2430,7 +2489,7 @@ export interface AddressSpace {
     /**
      * get the extension object constructor from a DataType nodeID or UADataType object
      */
-    getExtensionObjectConstructor(dataType: NodeId | UADataType): any;
+    getExtensionObjectConstructor(dataType: NodeId | UADataType): AnyConstructorFunc;
 
     /**
      * construct an extension object constructor from a DataType nodeID or UADataType object
@@ -2485,6 +2544,7 @@ import { AddressSpace as AddressSpaceImpl } from "../src/address_space";
 import { UAOffNormalAlarm } from "../src/alarms_and_conditions/ua_off_normal_alarm";
 import { ConstructNodeIdOptions } from "../src/nodeid_manager";
 import { UATwoStateDiscrete } from "./interfaces/data_access/ua_two_state_discrete";
+import { UANamespace } from "../src/namespace";
 
 export class AddressSpace {
     public static historizerFactory: any;
@@ -2640,3 +2700,4 @@ export declare function removeElement<T extends ExtensionObject>(
 // }}
 
 export declare function dumpXml(node: BaseNode, options: any): string;
+export declare function dumpToBSD(namespace: Namespace): string;

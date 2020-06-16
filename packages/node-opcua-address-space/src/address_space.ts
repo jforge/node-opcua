@@ -25,6 +25,8 @@ import {
 import * as utils from "node-opcua-utils";
 import { lowerFirstLetter } from "node-opcua-utils";
 import { DataType, Variant, VariantT } from "node-opcua-variant";
+import { AnyConstructorFunc } from "node-opcua-schemas";
+import { ConstructorFuncWithSchema } from "node-opcua-factory";
 import {
     AddReferenceOpts,
     AddressSpace as AddressSpacePublic,
@@ -50,7 +52,7 @@ import { UANamespace } from "./namespace";
 import { isNonEmptyQualifiedName } from "./namespace";
 import { NamespacePrivate } from "./namespace_private";
 import { Reference } from "./reference";
-import { UADataType } from "./ua_data_type";
+import { UADataType, ExtensionObjectConstructorFuncWithSchema } from "./ua_data_type";
 import { UAMethod } from "./ua_method";
 import { UAObject } from "./ua_object";
 import { UAObjectType } from "./ua_object_type";
@@ -457,21 +459,14 @@ export class AddressSpace implements AddressSpacePrivate {
             throw new Error("Expecting a UADataType" + _orig_dataTypeNode.toString());
         }
         dataTypeNode = dataTypeNode as UADataType;
-        /* istanbul ignore next */
-        if (typeof dataTypeNode!.nodeId!.value !== "number") {
-            throw new Error("Internal Errror");
-        }
-
-        const id: number = dataTypeNode!.nodeId.value as number;
-        assert(_.isFinite(id));
 
         const enumerationType = this.findDataType("Enumeration")!;
         if (sameNodeId(enumerationType.nodeId, dataTypeNode!.nodeId)) {
             return DataType.Int32;
         }
 
-        if (dataTypeNode.nodeId.namespace === 0 && DataType[id]) {
-            return id as DataType;
+        if (dataTypeNode.nodeId.namespace === 0 && DataType[dataTypeNode.nodeId.value as number]) {
+            return dataTypeNode.nodeId.value as DataType;
         }
         return this.findCorrespondingBasicDataType(dataTypeNode.subtypeOfObj as UADataType);
     }
@@ -643,8 +638,7 @@ export class AddressSpace implements AddressSpacePrivate {
      * ...
      *
      *
-     * eventTypeId can be a UAObjectType deriving from EventType
-     * or an instance of a ConditionType
+     * eventTypeId can be a UAEventType
      *
      * @private
      */
@@ -656,6 +650,7 @@ export class AddressSpace implements AddressSpacePrivate {
         // construct the reference dataStructure to store event Data
         let eventTypeNode = eventTypeId;
 
+        // make sure that eventType is really a object that derived from EventType
         if (eventTypeId instanceof UAObjectType) {
             eventTypeNode = addressSpace.findEventType(eventTypeId)!;
         }
@@ -667,7 +662,7 @@ export class AddressSpace implements AddressSpacePrivate {
         assert(eventTypeNode instanceof UAObjectType, "eventTypeId must represent a UAObjectType");
 
         // eventId
-        assert(data.hasOwnProperty, "eventId constructEventData : options object should not have eventId property");
+        assert(!data.hasOwnProperty("eventId"), "eventId constructEventData : options object should not have eventId property");
         data.eventId = data.eventId || addressSpace.generateEventId();
 
         // eventType
@@ -967,7 +962,7 @@ export class AddressSpace implements AddressSpacePrivate {
     }
 
     // - Extension Object ----------------------------------------------------------------------------------------------
-    public getExtensionObjectConstructor(dataType: NodeId | UADataType): any {
+    public getExtensionObjectConstructor(dataType: NodeId | UADataType): ExtensionObjectConstructorFuncWithSchema {
         assert(dataType, "expecting a dataType");
 
         if (dataType instanceof NodeId) {
@@ -985,10 +980,14 @@ export class AddressSpace implements AddressSpacePrivate {
         }
         const _dataType = dataType as UADataType;
         // to do verify that dataType is of type "Strucuture"
+        if (!_dataType.isSupertypeOf(this.findDataType("Structure")!)) {
+            console.log(_dataType.toString());
+        }
         assert(_dataType.isSupertypeOf(this.findDataType("Structure")!));
         if (!_dataType._extensionObjectConstructor) {
             const dataTypeManager = (this as any).$$extraDataTypeManager as ExtraDataTypeManager;
-            _dataType._extensionObjectConstructor = dataTypeManager.getExtensionObjectConstructorFromDataType(_dataType.nodeId);
+            _dataType._extensionObjectConstructor =
+                dataTypeManager.getExtensionObjectConstructorFromDataType(_dataType.nodeId) as ExtensionObjectConstructorFuncWithSchema;
         }
         assert(_dataType._extensionObjectConstructor, "dataType must have a constructor");
         const Constructor = _dataType._extensionObjectConstructor;

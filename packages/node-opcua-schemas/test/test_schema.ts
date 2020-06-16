@@ -156,6 +156,46 @@ describe("BSHA - Binary Schemas Helper 1", () => {
             optionalStringArray: ["a", "b"]
         });
     });
+    it("BSH6 - should handle StructureWithOptionalFields - 13 (all options fields missing)", () => {
+
+        const StructWithOnlyOptionals = getOrCreateConstructor("StructWithOnlyOptionals", dataTypeFactory);
+        const unionTest1 = new StructWithOnlyOptionals({/* empty */ });
+
+        encode_decode_round_trip_test(unionTest1, (buffer: Buffer) => {
+            buffer.length.should.eql(0);
+            if (doDebug) {
+                console.log("Buffer = ", hexDump(buffer));
+            }
+        });
+    });
+    it("BSH7 - should handle StructureWithOptionalFields - 13 (one field missing)", () => {
+
+        const StructWithOnlyOptionals = getOrCreateConstructor("StructWithOnlyOptionals", dataTypeFactory);
+        const unionTest1 = new StructWithOnlyOptionals({
+            optionalStringArray: ["Hello", "World"]
+        });
+
+        encode_decode_round_trip_test(unionTest1, (buffer: Buffer) => {
+            buffer.length.should.eql(26);
+            if (doDebug) {
+                console.log("Buffer = ", hexDump(buffer));
+            }
+        });
+    });
+    it("BSH8 - should handle StructureWithOptionalFields - 13 (one field missing 2)", () => {
+
+        const StructWithOnlyOptionals = getOrCreateConstructor("StructWithOnlyOptionals", dataTypeFactory);
+        const unionTest1 = new StructWithOnlyOptionals({
+            optionalInt32: 0
+        });
+
+        encode_decode_round_trip_test(unionTest1, (buffer: Buffer) => {
+            buffer.length.should.eql(8);
+            if (doDebug) {
+                console.log("Buffer = ", hexDump(buffer));
+            }
+        });
+    });
 
 });
 
@@ -422,12 +462,18 @@ describe("BSHE - Binary Schemas Helper 5 (Union)", () => {
         });
 
         const scanData4a = new ScanData({ string: "Hello" });
+        const reloaded4a = encode_decode_round_trip_test(scanData4a, (buffer: Buffer) => {
+            buffer.length.should.eql(4 + 4 + 5);
+        });
         const scanData4b = new ScanData({ switchField: 2, string: "Hello" });
         const reloaded4b = encode_decode_round_trip_test(scanData4b, (buffer: Buffer) => {
             buffer.length.should.eql(4 + 4 + 5);
         });
 
         const scanData5a = new ScanData({ string: "36" });
+        const reloaded5a = encode_decode_round_trip_test(scanData5a, (buffer: Buffer) => {
+            buffer.length.should.eql(10);
+        });
         const scanData5b = new ScanData({ switchField: 3, value: 36 });
         const reloaded5b = encode_decode_round_trip_test(scanData5b, (buffer: Buffer) => {
             buffer.length.should.eql(8);
@@ -469,5 +515,36 @@ describe("BSHE - Binary Schemas Helper 5 (Union)", () => {
 
     it("BSHE3 -  should construct a dynamic object structure ProcessingTimesDataType - 1", () => {
         /* */
+    });
+});
+
+describe("BSSGF - Binary Schemas Helper 5 (DerivedType -1)", () => {
+
+    let dataTypeFactory: DataTypeFactory;
+    let old_schema_helpers_doDebug = false;
+    before(async () => {
+        const sample_file = path.join(__dirname, "fixtures/sample_type5.xsd");
+
+        old_schema_helpers_doDebug = parameters.debugSchemaHelper;
+        parameters.debugSchemaHelper = true;
+        const sample = fs.readFileSync(sample_file, "ascii");
+        dataTypeFactory = new DataTypeFactory([]);
+        await parseBinaryXSDAsync(sample, idProvider, dataTypeFactory);
+    });
+
+    after(() => {
+        parameters.debugSchemaHelper = old_schema_helpers_doDebug;
+    });
+
+    it("BSHF1 - should handle RecipeIdExternalDataType", async () => {
+
+        const RecipeIdExternalDataType = getOrCreateConstructor("RecipeIdExternalDataType", dataTypeFactory);
+
+        const data = new RecipeIdExternalDataType({ id: "Id", hash: Buffer.alloc(10) });
+        const reloadedData = encode_decode_round_trip_test(data, (buffer: Buffer) => {
+            buffer.length.should.eql(4 /* optionalBit*/ + 4 + 4 + 2 + 10);
+        });
+        console.log(reloadedData.toJSON());
+
     });
 });

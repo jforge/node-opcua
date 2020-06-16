@@ -181,6 +181,7 @@ describe("NodeCrawler", function (this: any) {
             crawler.maxNodesPerBrowse = 0;
             await crawler.crawl(groupNodeId, { onBrowse: () => {/* empty */ } });
 
+            
             // then NodeCrawler shall be set with value provided by server
             crawler.maxNodesPerRead.should.eql(251);
             crawler.maxNodesPerBrowse.should.eql(252);
@@ -306,7 +307,7 @@ describe("NodeCrawler", function (this: any) {
         onBrowseCallCount.should.eql(1 + 10000 + 1);
         browse.callCount.should.eql(102); // 2 + 100*100
         browseNext.callCount.should.eql(10); // 10000*7
-        read.callCount.should.eql(64); // 64*1000 => 6 read per node in average ?
+        read.callCount.should.eql(84); // 84*1000 => 8 read per node in average ?
 
         browse.restore();
         browseNext.restore();
@@ -323,7 +324,7 @@ describe("NodeCrawler", function (this: any) {
 
         const crawler = new NodeCrawler(session);
 
-        let results: Array<{ browseName: string, nodeClass: string }> = [];
+        let results: { browseName: string, nodeClass: string }[] = [];
 
         const data = {
             onBrowse(this: UserData, crawler1: NodeCrawler, cacheNode: CacheNode) {

@@ -1,8 +1,9 @@
+/* eslint-disable max-statements */
 "use strict";
 /* global: describe, require */
 const should = require("should");
 const async = require("async");
-
+const chalk = require("chalk");
 const opcua = require("node-opcua");
 
 const OPCUAClient = opcua.OPCUAClient;
@@ -10,10 +11,8 @@ const StatusCodes = opcua.StatusCodes;
 
 const port = 2002;
 
-const build_server_with_temperature_device = require("../../test_helpers/build_server_with_temperature_device").build_server_with_temperature_device;
-
-const address_space_for_conformance_testing = require("node-opcua-address-space-for-conformance-testing");
-const build_address_space_for_conformance_testing = address_space_for_conformance_testing.build_address_space_for_conformance_testing;
+const { build_server_with_temperature_device } = require("../../test_helpers/build_server_with_temperature_device");
+const { build_address_space_for_conformance_testing } = require("node-opcua-address-space-for-conformance-testing");
 
 const {
     start_simple_server,
@@ -69,10 +68,11 @@ describe("testing Client - Umbrella ", function() {
             test.endpointUrl = test.server.endpoints[0].endpointDescriptions()[0].endpointUrl;
             test.temperatureVariableId = test.server.temperatureVariableId;
 
-            setTimeout(function() {
 
+            setTimeout(function() {
                 test.server.engine.currentSessionCount.should.eql(0, " expecting ZERO session on server when test is starting !");
                 console.log(" ..... done ");
+                console.log("server started at ", test.endpointUrl);
                 done(err);
 
             }, 1000);
@@ -106,7 +106,6 @@ describe("testing Client - Umbrella ", function() {
         const perform_operation_on_client_session = require("../../test_helpers/perform_operation_on_client_session").perform_operation_on_client_session;
 
         const client = OPCUAClient.create();
-        var endpointUrl = test.endpointUrl;
 
         perform_operation_on_client_session(client, endpointUrl, function(session, inner_done) {
             const relativePath = "/Objects/Server.ServerDiagnostics.ServerDiagnosticsSummary";
@@ -190,6 +189,8 @@ describe("testing Client - Umbrella ", function() {
     });
 
 
+    require("./u_test_e2e_ctt_modifyMonitoredItems010")(test);
+    require("./u_test_e2e_monitored_item_with_timestamp_source_issue#804")(test);
     require("./u_test_e2e_issue445_currentSessionCount")(test);
     require("./u_test_e2e_browse_read")(test);
     require("./u_test_e2e_ctt_582022")(test);
@@ -257,6 +258,6 @@ describe("testing Client - Umbrella ", function() {
     require("./alarms_and_conditions/u_test_e2e_conditions")(test);
     require("./alarms_and_conditions/u_test_e2e_alarm_client_side")(test);
     // typescripts tests starts here...
-    
+
     require("./u_test_e2e_deadband_filter").t(test);
 });

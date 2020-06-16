@@ -13,7 +13,6 @@ import {
   AddressSpace,
   BaseNode,
   bindExtObjArrayNode,
-  Callback,
   DataValueCallback,
   ensureDatatypeExtractedWithCallback,
   ensureObjectIsSecure,
@@ -28,9 +27,10 @@ import {
   UAServerDiagnosticsSummary,
   UAServerStatus,
   UASessionSecurityDiagnostics,
-  UAVariable
+  UAVariable,
+  UAServerDiagnostics
 } from "node-opcua-address-space";
-import { apply_timestamps, DataValue } from "node-opcua-data-value";
+import { apply_timestamps, DataValue, coerceTimestampsToReturn } from "node-opcua-data-value";
 
 import {
   ServerDiagnosticsSummaryDataType,
@@ -38,7 +38,7 @@ import {
   ServerStatusDataType,
   SubscriptionDiagnosticsDataType
 } from "node-opcua-common";
-import { AttributeIds, BrowseDirection, NodeClass } from "node-opcua-data-model";
+import { AttributeIds, BrowseDirection, NodeClass, coerceLocalizedText, LocalizedTextLike, makeAccessLevelFlag } from "node-opcua-data-model";
 import { coerceNodeId, makeNodeId, NodeId, NodeIdLike, NodeIdType, resolveNodeId } from "node-opcua-nodeid";
 import { BrowseResult } from "node-opcua-service-browse";
 import { ReadRequest, TimestampsToReturn } from "node-opcua-service-read";
@@ -60,7 +60,7 @@ import {
   HistoryReadResult,
   HistoryReadValueId
 } from "node-opcua-service-history";
-import { StatusCode, StatusCodes } from "node-opcua-status-code";
+import { StatusCode, StatusCodes, CallbackT } from "node-opcua-status-code";
 import {
   BrowseDescription,
   BrowsePath,
@@ -77,7 +77,8 @@ import {
   SessionDiagnosticsDataType,
   SessionSecurityDiagnosticsDataType,
   TimeZoneDataType,
-  WriteValue
+  WriteValue,
+  ReadValueId
 } from "node-opcua-types";
 import { DataType, isValidVariant, Variant, VariantArrayType } from "node-opcua-variant";
 
@@ -213,7 +214,6 @@ export class ServerEngine extends EventEmitter {
   public clientDescription?: ApplicationDescription;
 
   public addressSpace: AddressSpace | null;
-  public serverStatus: ServerStatusDataType;
 
   public _rejectedSessionCount: number = 0;
 
@@ -223,6 +223,8 @@ export class ServerEngine extends EventEmitter {
   private status: string;
   private _shutdownTask: any[];
   private _applicationUri: string;
+  private _expectedShutdownTime!: Date;
+  private _serverStatus: ServerStatusDataType;
 
   constructor(options: ServerEngineOptions) {
     super();
@@ -240,7 +242,7 @@ export class ServerEngine extends EventEmitter {
 
     options.buildInfo.buildDate = options.buildInfo.buildDate || new Date();
     // ---------------------------------------------------- ServerStatusDataType
-    this.serverStatus = new ServerStatusDataType({
+    this._serverStatus = new ServerStatusDataType({
       buildInfo: options.buildInfo,
       currentTime: new Date(),
       secondsTillShutdown: 0,
@@ -314,6 +316,9 @@ export class ServerEngine extends EventEmitter {
     this.serverDiagnosticsEnabled = options.serverDiagnosticsEnabled!;
 
   }
+  public isStarted(): boolean {
+    return !!this._serverStatus!
+  }
 
   public dispose() {
 
@@ -333,7 +338,7 @@ export class ServerEngine extends EventEmitter {
     }
 
     this._shutdownTask = [];
-    this.serverStatus = null as any as ServerStatusDataType;
+    this._serverStatus = null as any as ServerStatusDataType;
     this.status = "disposed";
 
     this.removeAllListeners();
@@ -342,15 +347,15 @@ export class ServerEngine extends EventEmitter {
   }
 
   public get startTime(): Date {
-    return this.serverStatus.startTime!;
+    return this._serverStatus.startTime!;
   }
 
   public get currentTime(): Date {
-    return this.serverStatus.currentTime!;
+    return this._serverStatus.currentTime!;
   }
 
   public get buildInfo(): BuildInfo {
-    return this.serverStatus.buildInfo;
+    return this._serverStatus.buildInfo;
   }
 
   /**
@@ -454,21 +459,32 @@ export class ServerEngine extends EventEmitter {
     return this.serverDiagnosticsSummary.publishingIntervalCount;
   }
 
+  public setShutdownTime(date: Date) {
+    this._expectedShutdownTime = date;
+  }
+  public setShutdownReason(reason: LocalizedTextLike): void {
+    this.addressSpace?.rootFolder.objects.server.serverStatus.shutdownReason.setValueFromSource({
+      dataType: DataType.LocalizedText,
+      value: coerceLocalizedText(reason)!
+    });
+  }
   /**
    * @method secondsTillShutdown
    * @return the approximate number of seconds until the server will be shut down. The
    * value is only relevant once the state changes into SHUTDOWN.
    */
   public secondsTillShutdown(): number {
+    if (!this._expectedShutdownTime) { return 0; }
     // ToDo: implement a correct solution here
-    return 0;
+    const now = Date.now();
+    return Math.max(0, Math.ceil((this._expectedShutdownTime.getTime() - now) / 1000));
   }
 
   /**
    * the name of the server
    */
   public get serverName(): string {
-    return this.serverStatus.buildInfo!.productName!;
+    return this._serverStatus.buildInfo!.productName!;
   }
 
   /**
@@ -484,10 +500,16 @@ export class ServerEngine extends EventEmitter {
   public get serverNamespaceUrn() {
     return this._applicationUri; // "urn:" + engine.serverName;
   }
+  public get serverStatus() {
+    return this._serverStatus;
+  }
 
   public setServerState(serverState: ServerState) {
     assert(serverState !== null && serverState !== undefined);
-    this.serverStatus.state = serverState;
+    this.addressSpace?.rootFolder?.objects?.server?.serverStatus?.state?.setValueFromSource({
+      dataType: DataType.UInt32,
+      value: serverState
+    });
   }
 
   public getServerDiagnosticsEnabledFlag(): boolean {
@@ -542,8 +564,6 @@ export class ServerEngine extends EventEmitter {
       const endTime = new Date();
       debugLog("Loading ", options.nodeset_filename, " done : ",
         endTime.getTime() - startTime.getTime(), " ms");
-
-      engine.setServerState(ServerState.Running);
 
       function bindVariableIfPresent(nodeId: NodeId, opts: any) {
         assert(nodeId instanceof NodeId);
@@ -703,6 +723,20 @@ export class ServerEngine extends EventEmitter {
           return engine.isAuditing;
         });
 
+      function makeNotReadableIfEnabledFlagIsFalse(variable: UAVariable) {
+        const originalIsReadable = variable.isReadable;
+        variable.isUserReadable = checkReadableFlag;
+        function checkReadableFlag(this: UAVariable, context: SessionContext): boolean {
+          const isEnabled = engine.serverDiagnosticsEnabled;
+          return originalIsReadable.call(this, context) && isEnabled;
+        }
+        for (const c of variable.getAggregates()) {
+          if (c.nodeClass === NodeClass.Variable) {
+            makeNotReadableIfEnabledFlagIsFalse(c as UAVariable);
+          }
+        }
+      }
+
       function bindServerDiagnostics() {
 
         bindStandardScalar(VariableIds.Server_ServerDiagnostics_EnabledFlag,
@@ -713,11 +747,12 @@ export class ServerEngine extends EventEmitter {
           });
 
         const nodeId = makeNodeId(VariableIds.Server_ServerDiagnostics_ServerDiagnosticsSummary);
-        const serverDiagnosticsSummary = addressSpace.findNode(nodeId) as UAServerDiagnosticsSummary;
+        const serverDiagnosticsSummaryNode = addressSpace.findNode(nodeId) as UAServerDiagnosticsSummary;
 
-        if (serverDiagnosticsSummary) {
-          serverDiagnosticsSummary.bindExtensionObject(engine.serverDiagnosticsSummary);
-          engine.serverDiagnosticsSummary = serverDiagnosticsSummary.$extensionObject;
+        if (serverDiagnosticsSummaryNode) {
+          serverDiagnosticsSummaryNode.bindExtensionObject(engine.serverDiagnosticsSummary);
+          engine.serverDiagnosticsSummary = serverDiagnosticsSummaryNode.$extensionObject;
+          makeNotReadableIfEnabledFlagIsFalse(serverDiagnosticsSummaryNode);
         }
 
       }
@@ -731,9 +766,7 @@ export class ServerEngine extends EventEmitter {
           return;
         }
         if (serverStatusNode) {
-          serverStatusNode.bindExtensionObject(engine.serverStatus);
-          // xx serverStatusNode.updateExtensionObjectPartial(self.serverStatus);
-          // xx self.serverStatus = serverStatusNode.$extensionObject;
+          serverStatusNode.bindExtensionObject(engine._serverStatus);
           serverStatusNode.minimumSamplingInterval = 1000;
         }
 
@@ -764,7 +797,7 @@ export class ServerEngine extends EventEmitter {
             return (target as any)[prop];
           }
         });
-
+        engine._serverStatus = serverStatusNode.$extensionObject;
       }
 
       function bindServerCapabilities() {
@@ -1024,30 +1057,38 @@ export class ServerEngine extends EventEmitter {
         }
 
         // create SessionsDiagnosticsSummary
-        const serverDiagnostics = server.getComponentByName("ServerDiagnostics");
-        if (!serverDiagnostics) {
+        const serverDiagnosticsNode = server.getComponentByName("ServerDiagnostics") as UAServerDiagnostics;
+        if (!serverDiagnosticsNode) {
           return;
+        }
+        if (true) {
+          // set serverDiagnosticsNode enabledFlag writeable for admin user only
+          // TO DO ...
+          serverDiagnosticsNode.enabledFlag.userAccessLevel = makeAccessLevelFlag("CurrentRead");
+          serverDiagnosticsNode.enabledFlag.accessLevel = makeAccessLevelFlag("CurrentRead");
         }
 
         // A Server may not expose the SamplingIntervalDiagnosticsArray if it does not use fixed sampling rates.
         // because we are not using fixed sampling rate, we need to remove the optional SamplingIntervalDiagnosticsArray
         // component
         const samplingIntervalDiagnosticsArray =
-          serverDiagnostics.getComponentByName("SamplingIntervalDiagnosticsArray");
+          serverDiagnosticsNode.getComponentByName("SamplingIntervalDiagnosticsArray");
         if (samplingIntervalDiagnosticsArray) {
           addressSpace.deleteNode(samplingIntervalDiagnosticsArray);
-          const s = serverDiagnostics.getComponents();
+          const s = serverDiagnosticsNode.getComponents();
           // xx console.log(s.map((x) => x.browseName.toString()).join(" "));
         }
 
-        const subscriptionDiagnosticsArray =
-          serverDiagnostics.getComponentByName("SubscriptionDiagnosticsArray")! as
+        const subscriptionDiagnosticsArrayNode =
+          serverDiagnosticsNode.getComponentByName("SubscriptionDiagnosticsArray")! as
           UADynamicVariableArray<SessionDiagnosticsDataType>;
-        assert(subscriptionDiagnosticsArray.nodeClass === NodeClass.Variable);
-        bindExtObjArrayNode(subscriptionDiagnosticsArray,
+        assert(subscriptionDiagnosticsArrayNode.nodeClass === NodeClass.Variable);
+        bindExtObjArrayNode(subscriptionDiagnosticsArrayNode,
           "SubscriptionDiagnosticsType", "subscriptionId");
 
-        const sessionsDiagnosticsSummary = serverDiagnostics.getComponentByName("SessionsDiagnosticsSummary")!;
+        makeNotReadableIfEnabledFlagIsFalse(subscriptionDiagnosticsArrayNode);
+
+        const sessionsDiagnosticsSummary = serverDiagnosticsNode.getComponentByName("SessionsDiagnosticsSummary")!;
 
         const sessionDiagnosticsArray =
           sessionsDiagnosticsSummary.getComponentByName("SessionDiagnosticsArray")! as
@@ -1072,6 +1113,7 @@ export class ServerEngine extends EventEmitter {
       prepareServerDiagnostics();
 
       engine.status = "initialized";
+      engine.setServerState(ServerState.Running);
       setImmediate(callback);
     });
   }
@@ -1203,6 +1245,14 @@ export class ServerEngine extends EventEmitter {
     for (let i = 0; i < nodesToRead.length; i++) {
       const readValueId = nodesToRead[i];
       dataValues[i] = engine._readSingleNode(context, readValueId, timestampsToReturn);
+      if (timestampsToReturn === TimestampsToReturn.Server) {
+        dataValues[i].sourceTimestamp = null;
+        dataValues[i].sourcePicoseconds = 0;
+      }
+      if ((timestampsToReturn === TimestampsToReturn.Both || timestampsToReturn === TimestampsToReturn.Server) && (!dataValues[i].serverTimestamp || dataValues[i].serverTimestamp === minOPCUADate)) {
+        dataValues[i].serverTimestamp = new Date();
+        dataValues[i].sourcePicoseconds = 0;
+      }
     }
     return dataValues;
   }
@@ -1608,7 +1658,7 @@ export class ServerEngine extends EventEmitter {
       return new TransferResult({ statusCode: StatusCodes.BadInternalError });
     }
 
-    // update diagnostics 
+    // update diagnostics
     subscription.subscriptionDiagnostics.transferRequestCount++;
 
     // now check that new session has sufficient right
@@ -1709,9 +1759,12 @@ export class ServerEngine extends EventEmitter {
    * @async
    */
   public refreshValues(
-    nodesToRefresh: any,
+    nodesToRefresh: (ReadValueId[] | HistoryReadValueId[]),
+    maxAge: number,
     callback: (err: Error | null, dataValues?: DataValue[]) => void
   ): void {
+
+    const referenceTime = new Date(Date.now() - maxAge);
 
     assert(callback instanceof Function);
     const engine = this;
@@ -1721,7 +1774,7 @@ export class ServerEngine extends EventEmitter {
 
       // only consider node  for which the caller wants to read the Value attribute
       // assuming that Value is requested if attributeId is missing,
-      if (nodeToRefresh.attributeId && nodeToRefresh.attributeId !== AttributeIds.Value) {
+      if (nodeToRefresh instanceof ReadValueId && nodeToRefresh.attributeId !== AttributeIds.Value) {
         continue;
       }
       // ... and that are valid object and instances of Variables ...
@@ -1753,7 +1806,7 @@ export class ServerEngine extends EventEmitter {
         }));
         return;
       }
-      (obj as UAVariable).asyncRefresh(inner_callback);
+      (obj as UAVariable).asyncRefresh(referenceTime, inner_callback);
 
     }, (err?: Error | null, arrResult?: (DataValue | undefined)[]) => {
       callback(err || null, arrResult as DataValue[]);
@@ -1763,7 +1816,7 @@ export class ServerEngine extends EventEmitter {
   private _exposeSubscriptionDiagnostics(subscription: Subscription): void {
 
     debugLog("ServerEngine#_exposeSubscriptionDiagnostics");
-    const subscriptionDiagnosticsArray = this._getServerSubscriptionDiagnosticsArray();
+    const subscriptionDiagnosticsArray = this._getServerSubscriptionDiagnosticsArrayNode();
     const subscriptionDiagnostics = subscription.subscriptionDiagnostics;
     assert((subscriptionDiagnostics as any).$subscription === subscription);
     assert(subscriptionDiagnostics instanceof SubscriptionDiagnosticsDataType);
@@ -1775,7 +1828,7 @@ export class ServerEngine extends EventEmitter {
 
   private _unexposeSubscriptionDiagnostics(subscription: Subscription) {
 
-    const subscriptionDiagnosticsArray = this._getServerSubscriptionDiagnosticsArray();
+    const subscriptionDiagnosticsArray = this._getServerSubscriptionDiagnosticsArrayNode();
     const subscriptionDiagnostics = subscription.subscriptionDiagnostics;
     assert(subscriptionDiagnostics instanceof SubscriptionDiagnosticsDataType);
     if (subscriptionDiagnostics && subscriptionDiagnosticsArray) {
@@ -1855,7 +1908,7 @@ export class ServerEngine extends EventEmitter {
       return new DataValue({ statusCode: StatusCodes.BadTimestampsToReturnInvalid });
     }
 
-    timestampsToReturn = (timestampsToReturn !== undefined) ? timestampsToReturn : TimestampsToReturn.Neither;
+    timestampsToReturn = coerceTimestampsToReturn(timestampsToReturn);
 
     const obj = engine.__findObject(nodeId!);
 
@@ -1885,9 +1938,6 @@ export class ServerEngine extends EventEmitter {
         console.log("                        ", err.stack);
         return new DataValue({ statusCode: StatusCodes.BadInternalError });
       }
-
-      // Xx console.log(dataValue.toString());
-
       dataValue = apply_timestamps(dataValue, timestampsToReturn, attributeId);
 
       return dataValue;
@@ -1899,7 +1949,7 @@ export class ServerEngine extends EventEmitter {
     nodeToRead: HistoryReadValueId,
     historyReadDetails: HistoryReadDetails,
     timestampsToReturn: TimestampsToReturn,
-    callback: Callback<HistoryReadResult>
+    callback: CallbackT<HistoryReadResult>
   ): void {
 
     assert(context instanceof SessionContext);
@@ -1910,7 +1960,7 @@ export class ServerEngine extends EventEmitter {
     const dataEncoding = nodeToRead.dataEncoding;
     const continuationPoint = nodeToRead.continuationPoint;
 
-    timestampsToReturn = (_.isObject(timestampsToReturn)) ? timestampsToReturn : TimestampsToReturn.Neither;
+    timestampsToReturn = coerceTimestampsToReturn(timestampsToReturn);
 
     const obj = this.__findObject(nodeId) as UAVariable;
 
@@ -1988,7 +2038,7 @@ export class ServerEngine extends EventEmitter {
     }
   }
 
-  private _getServerSubscriptionDiagnosticsArray()
+  private _getServerSubscriptionDiagnosticsArrayNode()
     : UADynamicVariableArray<SubscriptionDiagnosticsDataType> | null {
 
     if (!this.addressSpace) {
@@ -2006,9 +2056,9 @@ export class ServerEngine extends EventEmitter {
     }
 
     // SubscriptionDiagnosticsArray = i=2290
-    const subscriptionDiagnosticsArray = this.addressSpace.findNode(
+    const subscriptionDiagnosticsArrayNode = this.addressSpace.findNode(
       makeNodeId(VariableIds.Server_ServerDiagnostics_SubscriptionDiagnosticsArray))!;
 
-    return subscriptionDiagnosticsArray as UADynamicVariableArray<SubscriptionDiagnosticsDataType>;
+    return subscriptionDiagnosticsArrayNode as UADynamicVariableArray<SubscriptionDiagnosticsDataType>;
   }
 }

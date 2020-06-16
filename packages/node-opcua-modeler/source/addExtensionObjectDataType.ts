@@ -8,6 +8,7 @@ import {
     UAVariable,
     UAVariableT,
     UAVariableType,
+    dumpToBSD,
 } from "node-opcua-address-space";
 import assert from "node-opcua-assert";
 import {
@@ -31,12 +32,13 @@ import {
 } from "node-opcua-schemas";
 import {
     StructureDefinition,
-    StructureDefinitionOptions
+    StructureDefinitionOptions,
+    StructureType
 } from "node-opcua-types";
-import { DataType } from "node-opcua-variant";
+import { DataType, Variant } from "node-opcua-variant";
 
 /**
- * create the deprecated DataTypeDictionnary node that was
+ * create the deprecated DataTypeDictionary node that was
  * used up to version 1.03
  */
 export function getOrCreateDataTypeSystem(namespace: Namespace): UAObject {
@@ -60,7 +62,7 @@ export interface UADataTypeDictionary extends UAVariable {
     dataTypeVersion: UAVariableT<string, DataType.Boolean>;
 }
 
-function getDataTypeDictionary(namespace: Namespace): UADataTypeDictionary {
+export function getDataTypeDictionary(namespace: Namespace): UADataTypeDictionary {
 
     const addressSpace = namespace.addressSpace;
 
@@ -93,6 +95,17 @@ function getDataTypeDictionary(namespace: Namespace): UADataTypeDictionary {
             "NamespaceUri"
         ]
     }) as UADataTypeDictionary;
+
+    dataTypeDictionary.bindVariable({
+        get: () => {
+            const bsd = dumpToBSD(namespace);
+            return new Variant({
+                dataType: DataType.ByteString,
+                value: Buffer.from(bsd, "utf-8")
+            })
+        }
+    })
+
     const namespaceUriProp = dataTypeDictionary.getPropertyByName("NamespaceUri");
     if (namespaceUriProp) {
         namespaceUriProp.setValueFromSource({ dataType: DataType.String, value: namespace.namespaceUri });
@@ -108,7 +121,7 @@ export function addDataTypeDescription(namespace: Namespace, dataType: UADataTyp
 
     const addressSpace = namespace.addressSpace;
 
-    const dataTypeDictionnary = getDataTypeDictionary(namespace);
+    const dataTypeDictionary = getDataTypeDictionary(namespace);
 
     const dataTypeDescriptionType = addressSpace.findVariableType("DataTypeDescriptionType");
     if (!dataTypeDescriptionType) {
@@ -117,7 +130,7 @@ export function addDataTypeDescription(namespace: Namespace, dataType: UADataTyp
 
     const dataTypeDescription = dataTypeDescriptionType.instantiate({
         browseName: dataType.browseName.name!,
-        componentOf: dataTypeDictionnary,
+        componentOf: dataTypeDictionary,
     });
     dataTypeDescription.setValueFromSource({
         dataType: DataType.String,
@@ -163,7 +176,8 @@ export async function addExtensionObjectDataType(
     const baseSuperType = "Structure";
     const subtypeOf = addressSpace.findDataType(options.subtypeOf ? options.subtypeOf : baseSuperType)!;
 
-    const structureDefinition = options.structureDefinition || [];
+    const structureDefinition = options.structureDefinition;
+    structureDefinition.baseDataType = structureDefinition.baseDataType ? resolveNodeId(structureDefinition.baseDataType) : resolveNodeId("Structure");
 
     const dataType = namespace.createDataType({
         browseName: options.browseName,
@@ -172,26 +186,15 @@ export async function addExtensionObjectDataType(
         subtypeOf,
     });
 
-    const defaultBinaryNodeId = namespace.constructNodeId({
-        browseName: coerceQualifiedName("0:Default Binary"),
-        nodeClass: NodeClass.Object,
-        references: [
-            new Reference({
-                isForward: false,
-                nodeId: dataType.nodeId,
-                referenceType: resolveNodeId("HasEncoding"),
-            })
-        ],
-    });
-
     const defaultBinary = dataTypeEncodingType.instantiate({
         browseName: coerceQualifiedName("0:Default Binary"),
         encodingOf: dataType,
-        nodeId: defaultBinaryNodeId,
+        // nodeId: defaultBinaryEncodingNode,
     })!;
     assert(defaultBinary.browseName.toString() === "Default Binary");
 
     (dataType as any).$definition = new StructureDefinition(structureDefinition);
+    assert(!NodeId.sameNodeId((dataType as any).$definition.baseDataType, NodeId.nullNodeId));
 
     const dataTypeDescription = addDataTypeDescription(namespace, dataType);
     defaultBinary.addReference({

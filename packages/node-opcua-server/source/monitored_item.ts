@@ -13,12 +13,14 @@ import {
   extractEventFields,
   makeAttributeEventName,
   SessionContext,
-  UAVariable
+  UAVariable,
+  checkWhereClause,
+  AddressSpace
 } from "node-opcua-address-space";
 import { DateTime } from "node-opcua-basic-types";
 import { NodeClass, QualifiedNameOptions } from "node-opcua-data-model";
 import { AttributeIds } from "node-opcua-data-model";
-import { apply_timestamps, DataValue, extractRange, sameDataValue } from "node-opcua-data-value";
+import { apply_timestamps, DataValue, extractRange, sameDataValue, coerceTimestampsToReturn } from "node-opcua-data-value";
 import {
   checkDebugFlag, make_debugLog
 } from "node-opcua-debug";
@@ -32,17 +34,32 @@ import {
   TimestampsToReturn
 } from "node-opcua-service-read";
 import {
-  MonitoredItemModifyResult, MonitoredItemNotification, MonitoringMode,
+  MonitoredItemModifyResult,
+  MonitoredItemNotification,
+  MonitoringMode,
   MonitoringParameters
 } from "node-opcua-service-subscription";
 import {
-  DataChangeFilter, DataChangeTrigger, DeadbandType,
-  isOutsideDeadbandAbsolute, isOutsideDeadbandNone, isOutsideDeadbandPercent,
+  DataChangeFilter,
+  DataChangeTrigger,
+  DeadbandType,
+  isOutsideDeadbandAbsolute,
+  isOutsideDeadbandNone,
+  isOutsideDeadbandPercent,
   PseudoRange
 } from "node-opcua-service-subscription";
 import { StatusCode, StatusCodes } from "node-opcua-status-code";
-import { EventFieldList, MonitoringFilter, ReadValueIdOptions, SimpleAttributeOperand } from "node-opcua-types";
-import { sameVariant, Variant } from "node-opcua-variant";
+import {
+  EventFieldList,
+  MonitoringFilter,
+  ReadValueIdOptions,
+  SimpleAttributeOperand,
+  SubscriptionDiagnosticsDataType
+} from "node-opcua-types";
+import {
+  sameVariant,
+  Variant
+} from "node-opcua-variant";
 
 import { appendToTimer, removeFromTimer } from "./node_sampler";
 import { validateFilter } from "./validate_filter";
@@ -232,10 +249,15 @@ function apply_filter(
   }
   if (this.filter instanceof DataChangeFilter) {
     return apply_datachange_filter.call(this, newDataValue, this.oldDataValue);
+  } else {
+    // if filter not set, by default report changes to Status or Value only
+    if (newDataValue.statusCode.value !== this.oldDataValue.statusCode.value) {
+      return true; // Keep because statusCode has changed ...
+    }
+    return !sameVariant(newDataValue.value, this.oldDataValue.value);
   }
   return true; // keep
   // else {
-  //      // if filter not set, by default report changes to Status or Value only
   //      return !sameDataValue(newDataValue, this.oldDataValue, TimestampsToReturn.Neither);
   // }
   // return true; // keep
@@ -294,6 +316,24 @@ export type QueueItem = MonitoredItemNotification | EventFieldList;
 
 type TimerKey = NodeJS.Timer;
 
+export interface ISubscription {
+  $session?: any;
+  subscriptionDiagnostics: SubscriptionDiagnosticsDataType;
+}
+
+function isSourceNewerThan(a: DataValue, b?: DataValue): boolean {
+  if (!b) {
+    return true;
+  }
+  const at = a.sourceTimestamp?.getTime() || 0;
+  const bt = b.sourceTimestamp?.getTime() || 0;
+
+  if (at === bt) {
+    return a.sourcePicoseconds > b.sourcePicoseconds;
+  }
+  return at > bt;
+}
+
 /**
  * a server side monitored item
  *
@@ -329,7 +369,7 @@ export class MonitoredItem extends EventEmitter {
   public discardOldest: boolean = true;
   public queueSize: number = 0;
   public clientHandle?: number;
-  public $subscription: any;
+  public $subscription?: ISubscription;
   public _samplingId?: TimerKey | string;
   public samplingFunc: ((
     this: MonitoredItem,
@@ -371,7 +411,7 @@ export class MonitoredItem extends EventEmitter {
     // user has to call setMonitoringMode
     this.monitoringMode = MonitoringMode.Invalid;
 
-    this.timestampsToReturn = options.timestampsToReturn || TimestampsToReturn.Neither;
+    this.timestampsToReturn = coerceTimestampsToReturn(options.timestampsToReturn);
 
     this.itemToMonitor = options.itemToMonitor;
 
@@ -465,7 +505,7 @@ export class MonitoredItem extends EventEmitter {
     this._node = null;
     this._semantic_version = 0;
 
-    this.$subscription = null;
+    this.$subscription = undefined;
 
     this.removeAllListeners();
 
@@ -701,7 +741,7 @@ export class MonitoredItem extends EventEmitter {
           console.log(" SAMPLING ERROR =>", err);
         } else {
           // only record value if source timestamp is newer
-          // xx if (newDataValue.sourceTimestamp > this.oldDataValue.sourceTimestamp) {
+          // xx if (newDataValue && isSourceNewerThan(newDataValue, this.oldDataValue)) {
           this._on_value_changed(newDataValue!);
           // xx }
         }
@@ -783,8 +823,15 @@ export class MonitoredItem extends EventEmitter {
     // ignore the Event content filtering associated with a Subscription and will always be
     // delivered to the Client.
 
+    // istanbul ignore next
     if (!this.filter || !(this.filter instanceof EventFilter)) {
-      throw new Error("Internal Error");
+      throw new Error("Internal Error : a EventFilter is requested");
+    }
+
+    const addressSpace: AddressSpace = eventData.$eventDataSource?.addressSpace as AddressSpace;
+
+    if (!checkWhereClause(addressSpace, SessionContext.defaultContext, this.filter.whereClause, eventData)) {
+      return;
     }
 
     const selectClauses = this.filter.selectClauses
@@ -927,9 +974,11 @@ export class MonitoredItem extends EventEmitter {
       assert(_.isEqual(notification.value.statusCode, StatusCodes.GoodWithOverflowBit));
       assert(notification.value.statusCode.hasOverflowBit);
     }
-    if (this.$subscription && this.$subscription.subcriptionDiagnosticInfo) {
-      this.$subscription.subcriptionDiagnosticInfo.monitoringQueueOverflowCount++;
+    // console.log(chalk.cyan("Setting Over"), !!this.$subscription, !!this.$subscription!.subscriptionDiagnostics);
+    if (this.$subscription && this.$subscription.subscriptionDiagnostics) {
+      this.$subscription.subscriptionDiagnostics.monitoringQueueOverflowCount++;
     }
+    // to do eventQueueOverFlowCount
   }
 
   private _enqueue_notification(

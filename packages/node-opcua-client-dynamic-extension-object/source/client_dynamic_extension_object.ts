@@ -4,6 +4,8 @@
  */
 import * as chalk from "chalk";
 import * as _ from "underscore";
+import * as PrettyError from "pretty-error";
+const pe = new PrettyError();
 
 import { assert } from "node-opcua-assert";
 import {
@@ -28,7 +30,8 @@ import {
     StructuredTypeSchema,
     TypeDefinition,
     TypeSchemaBase,
-    getStandartDataTypeFactory,
+    getStandardDataTypeFactory,
+    EnumerationDefinitionSchema,
 } from "node-opcua-factory";
 import {
     ExpandedNodeId,
@@ -79,6 +82,7 @@ async function _readDeprecatedFlag(session: IBasicSession, dataTypeDictionary: N
     const a = await session.translateBrowsePath(browsePath);
     /* istanbul ignore next */
     if (!a.targets || a.targets.length === 0) {
+        // the server is probably version < 1.04.
         debugLog("Cannot find Deprecated property for dataTypeDictionary " + dataTypeDictionary.toString());
         return false;
     }
@@ -101,9 +105,9 @@ async function _readNamespaceUriProperty(session: IBasicSession, dataTypeDiction
 async function _getDataTypeDescriptions(
     session: IBasicSession,
     dataTypeDictionaryNodeId: NodeId
-): Promise<IDataTypeDescriptuon[]> {
+): Promise<IDataTypeDescription[]> {
 
-    const nodeToBrowse2 = {
+    const nodeToBrowse2: BrowseDescriptionLike = {
         browseDirection: BrowseDirection.Forward,
         includeSubtypes: false,
         nodeClassMask: makeNodeClassMask("Variable"),
@@ -119,7 +123,7 @@ async function _getDataTypeDescriptions(
 
 async function _enrichWithDescriptionOf(
     session: IBasicSession,
-    dataTypeDescriptions: IDataTypeDescriptuon[]
+    dataTypeDescriptions: IDataTypeDescription[]
 ): Promise<NodeId[]> {
     const nodesToBrowse3: BrowseDescriptionOptions[] = [];
     for (const ref of dataTypeDescriptions) {
@@ -133,6 +137,10 @@ async function _enrichWithDescriptionOf(
             //            resultMask: makeResultMask("NodeId | ReferenceType | BrowseName | NodeClass | TypeDefinition")
             resultMask: makeResultMask("NodeId")
         });
+    }
+    /* istanbul ignore next */
+    if (nodesToBrowse3.length === 0) {
+        return [];
     }
     const results3 = await session.browse(nodesToBrowse3);
 
@@ -168,37 +176,39 @@ async function _enrichWithDescriptionOf(
             });
         }
     }
-    const results4 = await session.browse(nodesToBrowseDataType);
     const dataTypeNodeIds: NodeId[] = [];
-    i = 0;
-    for (const result4 of results4) {
-        result4.references = result4.references || [];
+    if (nodesToBrowseDataType.length > 0) {
+        const results4 = await session.browse(nodesToBrowseDataType);
+        i = 0;
+        for (const result4 of results4) {
+            result4.references = result4.references || [];
 
-        /* istanbul ignore next */
-        if (result4.references.length !== 1) {
-            console.log("What's going on ?", result4.toString());
-        }
+            /* istanbul ignore next */
+            if (result4.references.length !== 1) {
+                console.log("What's going on ?", result4.toString());
+            }
 
-        for (const ref of result4.references) {
-            const dataTypeNodeId = ref.nodeId;
+            for (const ref of result4.references) {
+                const dataTypeNodeId = ref.nodeId;
 
-            dataTypeNodeIds.push(dataTypeNodeId);
+                dataTypeNodeIds.push(dataTypeNodeId);
 
-            const dataTypeDescription = dataTypeDescriptions[i++];
-            dataTypeDescription.encodings!.dataTypeNodeId = dataTypeNodeId;
+                const dataTypeDescription = dataTypeDescriptions[i++];
+                dataTypeDescription.encodings!.dataTypeNodeId = dataTypeNodeId;
+            }
         }
     }
     return dataTypeNodeIds;
 }
 
-interface IDataTypeDescriptuon {
+interface IDataTypeDescription {
     browseName: QualifiedName;
     nodeId: NodeId;
     encodings?: DataTypeAndEncodingId;
     symbolicName?: string;
 }
 async function _findEncodings(session: IBasicSession, dataTypeNodeId: NodeId): Promise<DataTypeAndEncodingId> {
-    const nodeToBrowse = {
+    const nodeToBrowse: BrowseDescriptionLike = {
         browseDirection: BrowseDirection.Forward,
         includeSubtypes: true,
         nodeClassMask: makeNodeClassMask("Object"),
@@ -209,7 +219,7 @@ async function _findEncodings(session: IBasicSession, dataTypeNodeId: NodeId): P
     const result = await session.browse(nodeToBrowse);
     const references = result.references || [];
     if (references.length === 0) {
-        throw new Error("Cannot find encodings on type " + dataTypeNodeId.toString() + " statusCode " + result.statusCode.toString());
+        // xx throw new Error("Cannot find encodings on type " + dataTypeNodeId.toString() + " statusCode " + result.statusCode.toString());
     }
     const encodings: DataTypeAndEncodingId = {
         dataTypeNodeId,
@@ -290,7 +300,7 @@ async function _extractDataTypeDictionaryFromDefinition(
     const dataTypeDescriptions = await _getDataTypeDescriptions(session, dataTypeDictionaryNodeId);
     const dataTypeNodeIds = await _enrichWithDescriptionOf(session, dataTypeDescriptions);
 
-    // now read DataTypeDefition attributes of all the dataTypeNodeIds
+    // now read DataTypeDefinition attributes of all the dataTypeNodeIds, this will only contains concrete structure
     const nodesToRead: ReadValueIdLike[] = dataTypeNodeIds.map((nodeId: NodeId) => ({
         attributeId: AttributeIds.DataTypeDefinition, nodeId,
     }));
@@ -307,30 +317,40 @@ async function _extractDataTypeDictionaryFromDefinition(
 
         const dataTypeNodeId = dataTypeNodeIds[index];
         const dataTypeDescription = dataTypeDescriptions[index];
+
+        /* istanbul ignore else */
+        if (dataValue.statusCode === StatusCodes.Good) {
+            const dataTypeDefinition = dataValue.value.value;
+
+            if (dataTypeDefinition && dataTypeDefinition instanceof StructureDefinition) {
+                const className = dataTypeDescription.browseName.name!;
+                dataTypeDefinitions.push({ className, dataTypeNodeId, dataTypeDefinition });
+            }
+        } else {
+            debugLog("dataTypeNodeId ", dataTypeNodeId.toString(), " has no DataTypeDescription attribute", dataValue.statusCode.toString());
+        }
         index++;
-
-        /* istanbul ignore next */
-        if (dataValue.statusCode !== StatusCodes.Good) {
-            continue;
-        }
-        const dataTypeDefinition = dataValue.value.value;
-
-        if (dataTypeDefinition && dataTypeDefinition instanceof StructureDefinition) {
-            const className = dataTypeDescription.browseName.name!;
-            dataTypeDefinitions.push({ className, dataTypeNodeId, dataTypeDefinition });
-        }
     }
-    // to do put in logicial order
+    // to do put in logical order
     const dataTypeDefinitionsSorted = sortStructure(dataTypeDefinitions);
-
+    if (doDebug) {
+        debugLog("order ", dataTypeDefinitionsSorted.map((a) => a.className + " " + a.dataTypeNodeId).join(" ->  "));
+    }
     for (const { className, dataTypeNodeId, dataTypeDefinition } of dataTypeDefinitionsSorted) {
+
+        // istanbul ignore next
+        if (doDebug) {
+            debugLog(chalk.yellow("--------------------------------------- "), className, dataTypeNodeId.toString());
+        }
         if (dataTypeFactory.hasStructuredType(className)) {
-            continue;
+            continue; // this structure has already been seen
         }
         // now fill typeDictionary
         try {
+
             const schema = await convertDataTypeDefinitionToStructureTypeSchema(
                 session, dataTypeNodeId, className, dataTypeDefinition, dataTypeFactory, cache);
+
             // istanbul ignore next
             if (doDebug) {
                 debugLog(chalk.red("Registering "), chalk.cyan(className.padEnd(30, " ")), schema.dataTypeNodeId.toString());
@@ -369,27 +389,38 @@ async function _extractNodeIds(
     };
 }
 
+interface TypeDictionaryInfo {
+    reference: ReferenceDescription,
+    dataTypeDictionaryNodeId: NodeId,
+    isDictionaryDeprecated: boolean,
+    rawSchema: string,
+    dependencies: { [key: string]: string },
+    targetNamespace: string,
+};
+
 async function _extractDataTypeDictionary(
     session: IBasicSession,
-    dataTypeDictionaryNodeId: NodeId,
+    d: TypeDictionaryInfo,
     dataTypeManager: ExtraDataTypeManager
 ): Promise<void> {
 
-    const isDictionaryDeprecated = await _readDeprecatedFlag(session, dataTypeDictionaryNodeId);
-    const rawSchemaDataValue = await session.read({ nodeId: dataTypeDictionaryNodeId, attributeId: AttributeIds.Value });
+    const dataTypeDictionaryNodeId = d.reference.nodeId;
+
+    const isDictionaryDeprecated = d.isDictionaryDeprecated; // await _readDeprecatedFlag(session, dataTypeDictionaryNodeId);
+    const rawSchema = d.rawSchema; // DataValue = await session.read({ nodeId: dataTypeDictionaryNodeId, attributeId: AttributeIds.Value });
 
     const name = await session.read({ nodeId: dataTypeDictionaryNodeId, attributeId: AttributeIds.BrowseName });
     const namespace = await _readNamespaceUriProperty(session, dataTypeDictionaryNodeId);
 
-    if (isDictionaryDeprecated || !rawSchemaDataValue.value.value) {
+    if (isDictionaryDeprecated || rawSchema.length === 0) {
 
-        debugLog("DataTypeDictionary is deprecated  or BSD schema stored in dataValue is null ! ", chalk.cyan(name.value.value.toString()), "namespace =", namespace);
-        debugLog("lets use the new way (1.04) and let's crawl all dataTypes exposed by this name space");
+        debugLog("DataTypeDictionary is deprecated or BSD schema stored in dataValue is null !", chalk.cyan(name.value.value.toString()), "namespace =", namespace);
+        debugLog("let's use the new way (1.04) and let's crawl all dataTypes exposed by this name space");
 
-        // dataType definition in store directily in UADataType under the $definition property
+        // dataType definition in store directly in UADataType under the $definition property
         const dataTypeFactory2 = dataTypeManager.getDataTypeFactory(dataTypeDictionaryNodeId.namespace);
         if (!dataTypeFactory2) {
-            throw new Error("cannot find dataTypeFactort for namespace " + dataTypeDictionaryNodeId.namespace);
+            throw new Error("cannot find dataTypeFactory for namespace " + dataTypeDictionaryNodeId.namespace);
         }
         await _extractDataTypeDictionaryFromDefinition(session, dataTypeDictionaryNodeId, dataTypeFactory2);
         return;
@@ -398,8 +429,6 @@ async function _extractDataTypeDictionary(
         debugLog(" ----- Using old method for extracting schema => with BSD files");
         // old method ( until 1.03 )
         // one need to read the schema file store in the dataTypeDictionary node and parse it !
-        const rawSchema = rawSchemaDataValue.value.value.toString();
-
         /* istanbul ignore next */
         if (doDebug) {
             debugLog("---------------------------------------------");
@@ -419,7 +448,7 @@ async function _exploreDataTypeDefinition(
     namespaces: string[]
 ) {
 
-    const nodeToBrowse = {
+    const nodeToBrowse: BrowseDescriptionLike = {
         browseDirection: BrowseDirection.Forward,
         includeSubtypes: false,
         nodeClassMask: makeNodeClassMask("Variable"),
@@ -462,13 +491,15 @@ async function _exploreDataTypeDefinition(
 
     /* istanbul ignore next */
     if (doDebug) {
+
         console.log(chalk.bgWhite.red("testing new constructors"));
         const tuples = _.zip(references, binaryEncodingNodeIds);
         for (const [ref, binaryEncoding] of tuples) {
 
             const name = ref.browseName!.name!.toString();
-            debugLog("      type ", name.padEnd(30, " "), binaryEncoding.toString());
-
+            if (doDebug) {
+                debugLog("      type ", name.padEnd(30, " "), binaryEncoding.toString());
+            }
             // let's verify that constructor is operational
             try {
                 const constructor = dataTypeFactory.getStructureTypeConstructor(name);
@@ -502,17 +533,29 @@ export async function populateDataTypeManager(
         nodeId: resolveNodeId("Server_NamespaceArray")
     });
 
-    const namespaceArray = dataValueNamespaceArray.value.value;
+    const namespaceArray: string[] = dataValueNamespaceArray.value.value;
 
-    if (dataValueNamespaceArray.statusCode === StatusCodes.Good &&
-        (namespaceArray && namespaceArray.length > 0)) {
-        dataTypeManager.setNamespaceArray(namespaceArray as string[]);
+    // istanbul ignore next
+    if (!namespaceArray) {
+        // throw new Error("Cannot get Server_NamespaceArray as a array of string");
+        return;
+    }
+
+    // istanbul ignore next
+    if (doDebug) {
+        debugLog("namespaceArray ", namespaceArray.map((a, index) => " " + index.toString().padEnd(3) + ":" + a).join(" "));
+    }
+
+    if (dataValueNamespaceArray.statusCode === StatusCodes.Good && (namespaceArray && namespaceArray.length > 0)) {
+
+        dataTypeManager.setNamespaceArray(namespaceArray);
 
         for (let namespaceIndex = 1; namespaceIndex < namespaceArray.length; namespaceIndex++) {
-            const dataTypeFactory1 = new DataTypeFactory([getStandartDataTypeFactory()]);
-            dataTypeManager.registerDataTypeFactory(namespaceIndex, dataTypeFactory1);
+            if (!dataTypeManager.hasDataTypeFactory(namespaceIndex)) {
+                const dataTypeFactory1 = new DataTypeFactory([getStandardDataTypeFactory()]);
+                dataTypeManager.registerDataTypeFactory(namespaceIndex, dataTypeFactory1);
+            }
         }
-
     }
 
     /// to do :: may be not useful
@@ -525,8 +568,6 @@ export async function populateDataTypeManager(
 
     // "OPC Binary"[DataSystemType]
     const opcBinaryNodeId = resolveNodeId("OPCBinarySchema_TypeSystem");
-
-    debugLog(opcBinaryNodeId.toString());
 
     // let find all DataType dictionary node corresponding to a given namespace
     // (have DataTypeDictionaryType)
@@ -552,32 +593,159 @@ export async function populateDataTypeManager(
         (e: ReferenceDescription) => e.nodeId.namespace !== 0 &&
             sameNodeId(e.typeDefinition, dataTypeDictionaryType));
 
-    debugLog(`found ${references.length} dictionnary`);
+    debugLog(`found ${references.length} dictionary`);
+
+    async function putInCorrectOrder(): Promise<TypeDictionaryInfo[]> {
+
+        const infos: TypeDictionaryInfo[] = [];
+        const innerMap: { [key: string]: TypeDictionaryInfo } = {};
+
+        for (const reference of references) {
+            const dataTypeDictionaryNodeId = reference.nodeId;
+            const isDictionaryDeprecated = await _readDeprecatedFlag(session, dataTypeDictionaryNodeId);
+            const rawSchemaDataValue = await session.read({ nodeId: dataTypeDictionaryNodeId, attributeId: AttributeIds.Value });
+            const rawSchema = rawSchemaDataValue.value.value ? rawSchemaDataValue.value.value.toString() : "";
+
+            const info: TypeDictionaryInfo = {
+                dataTypeDictionaryNodeId,
+                dependencies: {},
+                isDictionaryDeprecated,
+                rawSchema,
+                reference,
+                targetNamespace: "",
+            };
+
+            infos.push(info);
+
+            if (!isDictionaryDeprecated && rawSchema.length > 0) {
+                const matches = rawSchema.match(/<opc:TypeDictionary([^\>]+)>/);
+                if (matches) {
+                    // extract xml:NS="namespace" from attribute list
+                    // for instance:
+                    //      <opc:TypeDictionary
+                    //                xmlns:opc="http://opcfoundation.org/BinarySchema/"
+                    //                xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                    //                xmlns:ua="http://opcfoundation.org/UA/"
+                    //                xmlns:tns="urn:SomeName:Ua:Types:GlobalTypes"
+                    //                DefaultByteOrder="LittleEndian"
+                    //                TargetNamespace="urn:SomeName:Ua:Types:GlobalTypes">
+                    const typeDictionaryElementAttributes = matches[1];
+                    const c2 = typeDictionaryElementAttributes.match(/TargetNamespace="([^\"]+)"/);
+                    if (c2) {
+                        info.targetNamespace = c2[1];
+                    }
+
+                    const nsKeyNamespace: { [key: string]: string } = {};
+                    for (const attribute of typeDictionaryElementAttributes.split(" ")) {
+                        const c = attribute.match(/xmlns:(.*)=\"([^\"]+)\"/);
+                        if (c) {
+                            const xmlns = c[1];
+                            const namespace = c[2];
+                            nsKeyNamespace[xmlns] = namespace;
+                            debugLog("xxxx ns= ", xmlns, "=>", namespace);
+                        }
+                    }
+                    info.dependencies = nsKeyNamespace;
+                    debugLog("xxx targetNamespace = ", info.targetNamespace);
+                    innerMap[info.targetNamespace] = info;
+                }
+            } else {
+                // may be 1.04 => the rawScheme is no more needed in new version
+                info.targetNamespace = namespaceArray[dataTypeDictionaryNodeId.namespace];
+                debugLog("xxx targetNamespace = ", info.targetNamespace);
+                innerMap[info.targetNamespace] = info;
+            }
+            assert(info.targetNamespace.length !== 0);
+        }
+        // ----------------------------------
+        const orderedList: TypeDictionaryInfo[] = [];
+        const visited: any = {};
+        function explore(d: TypeDictionaryInfo): void {
+            if (visited[d.targetNamespace]) {
+                return;
+            }
+            visited[d.targetNamespace] = 1;
+            for (const [xmlns, namespace] of Object.entries(d.dependencies)) {
+                if (!innerMap[namespace] || namespace === d.targetNamespace) {
+                    continue;
+                }
+                explore(innerMap[namespace]);
+            }
+            orderedList.push(d);
+        }
+        for (const d of infos) {
+            explore(d);
+        }
+
+        debugLog(" Ordered List = ", orderedList.map(a => a.targetNamespace).join("  "));
+
+        return orderedList;
+    }
+    const dataTypeDictionaryInfo = await putInCorrectOrder();
+
+    // setup dependencies
+    const map: { [key: string]: TypeDictionaryInfo } = {};
+    for (const d of dataTypeDictionaryInfo) {
+        map[d.targetNamespace] = d;
+
+        debugLog(" fixing based dataTypeFactory dependencies for  ", d.targetNamespace, "index = ", d.dataTypeDictionaryNodeId.namespace);
+
+        const baseDataFactories: DataTypeFactory[] = [getStandardDataTypeFactory()];
+        for (const namespace of Object.values(d.dependencies)) {
+            if (namespace === d.targetNamespace) {
+                continue;
+            }
+            const baseDataFactory = map[namespace];
+            if (!baseDataFactory) {
+                // xx console.log("xxxxx baseDataFactory = ", namespace);
+                continue;
+            }
+            const namespaceIndex = baseDataFactory.dataTypeDictionaryNodeId.namespace;
+            if (dataTypeManager.hasDataTypeFactory(namespaceIndex)) {
+                const dep = dataTypeManager.getDataTypeFactory(namespaceIndex);
+                baseDataFactories.push(dep);
+                debugLog("   considering , ", baseDataFactory.targetNamespace, "index = ", baseDataFactory.dataTypeDictionaryNodeId.namespace);
+            }
+        }
+        const dataTypeFactory = dataTypeManager.getDataTypeFactory(d.dataTypeDictionaryNodeId.namespace);
+        dataTypeFactory.repairBaseDataFactories(baseDataFactories);
+    }
+    // --------------------
 
     // now investigate DataTypeDescriptionType
-    await (async () => {
-        async function processReference2(ref: ReferenceDescription): Promise<void> {
 
-            const dataTypeDicitionaryNodeId = ref.nodeId;
-            // xx const dataTypeFactory = dataTypeManager.getDataTypeFactoryForNamespace(dataTypeDicitionaryNodeId.namespace);
+    async function processReferenceOnDataTypeDictionaryType(d: TypeDictionaryInfo): Promise<void> {
 
-            await _extractDataTypeDictionary(session, dataTypeDicitionaryNodeId, dataTypeManager);
-            /* istanbul ignore next */
-            if (doDebug) {
-                debugLog(chalk.bgWhite("                                         => "), ref.browseName.toString(), ref.nodeId.toString());
-            }
-            const dataTypeFactory = dataTypeManager.getDataTypeFactoryForNamespace(dataTypeDicitionaryNodeId.namespace);
-            await _exploreDataTypeDefinition(session, dataTypeDicitionaryNodeId, dataTypeFactory, dataTypeManager.namespaceArray);
+        debugLog(chalk.cyan("processReferenceOnDataTypeDictionaryType on  "), d.targetNamespace);
 
+        const ref = d.reference;
+        const dataTypeDictionaryNodeId = d.reference.nodeId;
+
+        await _extractDataTypeDictionary(session, d, dataTypeManager);
+        /* istanbul ignore next */
+        if (doDebug) {
+            debugLog(chalk.bgWhite("                                         => "), ref.browseName.toString(), ref.nodeId.toString());
         }
-        const promises2: Array<Promise<void>> = [];
-        for (const ref of references) {
-            promises2.push(processReference2(ref));
+        const dataTypeFactory = dataTypeManager.getDataTypeFactoryForNamespace(dataTypeDictionaryNodeId.namespace);
+        await _exploreDataTypeDefinition(session, dataTypeDictionaryNodeId, dataTypeFactory, dataTypeManager.namespaceArray);
+    }
+
+    // https://medium.com/swlh/dealing-with-multiple-promises-in-javascript-41d6c21f20ff
+    for (const d of dataTypeDictionaryInfo) {
+
+        try {
+            await processReferenceOnDataTypeDictionaryType(d).catch(e => {
+                console.log(e);
+                debugLog("processReferenceOnDataTypeDictionaryType has failed ")
+                debugLog("Error", e.message);
+                debugLog(e);
+                return e;
+            });
+
+        } catch (err) {
+            debugLog(chalk.red("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx "), err);
         }
-        await Promise.all(promises2);
-
-    })();
-
+    }
     debugLog("out ... populateDataTypeManager");
 }
 
@@ -586,7 +754,7 @@ async function getHasEncodingDefaultBinary(
     dataTypeNodeId: NodeId
 ): Promise<NodeId> {
 
-    const nodeToBrowse1 = {
+    const nodeToBrowse1: BrowseDescriptionLike = {
         browseDirection: BrowseDirection.Forward,
         includeSubtypes: false,
         nodeClassMask: makeNodeClassMask("Object"),
@@ -606,6 +774,8 @@ async function getHasEncodingDefaultBinary(
     /* istanbul ignore next */
     if (!(result1.references && result1.references.length === 1)) {
 
+        // may be dataTypeNodeId is not a dataType,
+        // let's verify this.
         const nodeClass = await session.read({
             attributeId: AttributeIds.NodeClass,
             nodeId: dataTypeNodeId
@@ -620,7 +790,7 @@ async function getHasEncodingDefaultBinary(
         console.log("nodeClass  :", NodeClass[nodeClass.value.value]);
         console.log("browseName :", browseName.toString());
         console.log(result1.toString());
-        throw new Error("getDataTypeDefinition invalid HasEncoding reference");
+        throw new Error("getDataTypeDefinition invalid HasEncoding reference dataTypeNodeId must be NodeClass.DataType but was " + NodeClass[nodeClass.value.value]);
     }
 
     const encodingReference = result1.references![0]!;
@@ -639,7 +809,7 @@ async function getHasEncodingDefaultBinary(
 }
 
 async function getDefinition(session: IBasicSession, defaultBinaryEncodingNodeId: NodeId): Promise<NodeId> {
-    const nodeToBrowse2 = {
+    const nodeToBrowse2: BrowseDescriptionLike = {
         browseDirection: BrowseDirection.Forward,
         includeSubtypes: false,
         nodeClassMask: makeNodeClassMask("Variable"),
@@ -670,7 +840,7 @@ async function getDefinition(session: IBasicSession, defaultBinaryEncodingNodeId
 
 async function getSchemaNode(session: IBasicSession, definitionRefNodeId: NodeId) {
     // find parent node to access the xsd File
-    const nodeToBrowse3 = {
+    const nodeToBrowse3: BrowseDescriptionLike = {
         browseDirection: BrowseDirection.Inverse,
         includeSubtypes: false,
         nodeClassMask: makeNodeClassMask("Variable"),
@@ -722,8 +892,10 @@ export async function getDataTypeDefinition(
     if (!dataTypeFactory) {
         throw new Error(" cannot find typeDictionary for  " + schemaNode.toString());
     }
-    const name = await (await session.read({ nodeId: dataTypeNodeId, attributeId: AttributeIds.BrowseName })).value.value.name;
+    const nameDataValue: DataValue =
+        await session.read({ nodeId: dataTypeNodeId, attributeId: AttributeIds.BrowseName });
 
+    const name = nameDataValue.value.value.name!;
     const schema = dataTypeFactory.getStructuredTypeSchema(name);
     return schema;
 }
@@ -733,7 +905,7 @@ async function findSuperType(
     dataTypeNodeId: NodeId
 ): Promise<NodeId> {
 
-    const nodeToBrowse3 = {
+    const nodeToBrowse3: BrowseDescriptionLike = {
         browseDirection: BrowseDirection.Inverse,
         includeSubtypes: false,
         nodeClassMask: makeNodeClassMask("DataType"),
@@ -769,8 +941,8 @@ async function findDataTypeCategory(
         return cache[key].category;
     }
     let category: FieldCategory;
-    if (subTypeNodeId.namespace === 0 && subTypeNodeId.value < 29) {
-        // well knwow node ID !
+    if (subTypeNodeId.namespace === 0 && subTypeNodeId.value <= 29) {
+        // well known node ID !
         switch (subTypeNodeId.value) {
             case 22: /* Structure */
                 category = FieldCategory.complex;
@@ -826,7 +998,7 @@ interface Cache {
 async function readBrowseName(session: IBasicSession, nodeId: NodeId): Promise<string> {
     const dataValue = await session.read({ nodeId, attributeId: AttributeIds.BrowseName });
     if (dataValue.statusCode !== StatusCodes.Good) {
-        const message = "cannot extract BrowseName of nodeId = " + nodeId.toString();
+        const message = "cannot extract BrowseName of nodeId = " + nodeId.toString() + " statusCode = " + dataValue.statusCode.toString();
         debugLog(message);
         throw new Error(message);
     }
@@ -840,9 +1012,7 @@ async function resolveFieldType(
     cache: { [key: string]: Cache }
 ): Promise<Cache | null> {
 
-    if (dataTypeNodeId.value === 0) {
-        // this is the default Structure !
-        // throw new Error("invalid nodeId " + dataTypeNodeId.toString());
+    if (dataTypeNodeId.namespace === 0 && dataTypeNodeId.value === 22) {
         return null;
     }
     const key = dataTypeNodeId.toString();
@@ -850,9 +1020,22 @@ async function resolveFieldType(
     if (v) {
         return v;
     }
+
+    if (dataTypeNodeId.value === 0) {
+        const category = FieldCategory.basic;
+        const schema = dataTypeFactory.getSimpleType("Variant");
+        const v2: Cache = {
+            category,
+            fieldTypeName: "Variant",
+            schema
+        };
+        cache[key] = v2;
+        return v2;
+    }
+
     const fieldTypeName = await readBrowseName(session, dataTypeNodeId);
 
-    let schema: TypeDefinition;
+    let schema: TypeDefinition | undefined;
     let category: FieldCategory = FieldCategory.enumeration;
 
     if (dataTypeFactory.hasStructuredType(fieldTypeName!)) {
@@ -868,16 +1051,19 @@ async function resolveFieldType(
 
         debugLog(" type " + fieldTypeName + " has not been seen yet, let resolve it");
         category = await findDataTypeCategory(session, cache, dataTypeNodeId);
-
-        debugLog(" type " + fieldTypeName + " has not been seen yet, let resolve it (category = ", category, " )");
+        debugLog(" type " + fieldTypeName + " has not been seen yet, let resolve it => (category = ", category, " )");
 
         switch (category) {
-            case "basic":
+            case FieldCategory.basic:
                 schema = await findDataTypeBasicType(session, cache, dataTypeNodeId);
+                /* istanbul ignore next */
+                if (!schema) {
+                    console.log("Cannot find basic type " + fieldTypeName);
+                }
                 break;
             default:
-            case "complex":
-            case "enumeration":
+            case FieldCategory.enumeration:
+            case FieldCategory.complex:
                 const dataTypeDefinitionDataValue = await session.read({
                     attributeId: AttributeIds.DataTypeDefinition,
                     nodeId: dataTypeNodeId,
@@ -885,17 +1071,36 @@ async function resolveFieldType(
 
                 /* istanbul ignore next */
                 if (dataTypeDefinitionDataValue.statusCode !== StatusCodes.Good) {
-                    throw new Error(" Cannot find dataType Definition!");
+                    throw new Error(" Cannot find dataType Definition ! with nodeId =" + dataTypeNodeId.toString());
                 }
-
                 const definition = dataTypeDefinitionDataValue.value.value;
-                // schema = await convertDataTypeDefinitionToStructureTypeSchema(session, fieldTypeName, definition, dataTypeFactory, cache);
-                schema = dataTypeFactory.getStructuredTypeSchema(fieldTypeName);
+
+                if (category === FieldCategory.enumeration) {
+
+                    if (definition instanceof EnumDefinition) {
+                        const e = new EnumerationDefinitionSchema({
+                            enumValues: definition.fields,
+                            name: fieldTypeName
+                        });
+                        dataTypeFactory.registerEnumeration(e);
+
+                        schema = e;
+                    }
+                } else {
+                    schema = await convertDataTypeDefinitionToStructureTypeSchema(
+                        session, dataTypeNodeId, fieldTypeName, definition, dataTypeFactory, cache);
+
+                }
+                // xx const schema1 = dataTypeFactory.getStructuredTypeSchema(fieldTypeName);
                 break;
         }
     }
 
-    assert(schema, "expecting a schema here");
+    /* istanbul ignore next */
+    if (!schema) {
+        throw new Error("expecting a schema here fieldTypeName=" + fieldTypeName + " " + dataTypeNodeId.toString() + " category = " + category);
+    }
+
     const v2: Cache = {
         category,
         fieldTypeName,
@@ -911,13 +1116,17 @@ async function _setupEncodings(
     schema: StructuredTypeSchema
 ): Promise<StructuredTypeSchema> {
 
+    // read abstract flag
+    const isAbstractDV = await session.read({ nodeId: dataTypeNodeId, attributeId: AttributeIds.IsAbstract });
     schema.dataTypeNodeId = dataTypeNodeId;
     schema.id = dataTypeNodeId;
-    const encodings = await _findEncodings(session, dataTypeNodeId);
-    schema.encodingDefaultBinary = makeExpandedNodeId(encodings.binaryEncodingNodeId);
-    schema.encodingDefaultXml = makeExpandedNodeId(encodings.xmlEncodingNodeId);
-    schema.encodingDefaultJson = makeExpandedNodeId(encodings.jsonEncodingNodeId);
 
+    if (isAbstractDV.statusCode === StatusCodes.Good && isAbstractDV.value.value === false) {
+        const encodings = await _findEncodings(session, dataTypeNodeId);
+        schema.encodingDefaultBinary = makeExpandedNodeId(encodings.binaryEncodingNodeId);
+        schema.encodingDefaultXml = makeExpandedNodeId(encodings.xmlEncodingNodeId);
+        schema.encodingDefaultJson = makeExpandedNodeId(encodings.jsonEncodingNodeId);
+    }
     return schema;
 }
 
@@ -932,26 +1141,60 @@ export async function convertDataTypeDefinitionToStructureTypeSchema(
 
     if (definition instanceof StructureDefinition) {
 
+        const fields: FieldInterfaceOptions[] = [];
+
+        const isUnion = definition.structureType === StructureType.Union;
+
         switch (definition.structureType) {
+            case StructureType.Union:
+                // xx console.log("Union Found : ", name);
+                fields.push({
+                    fieldType: "UInt32",
+                    name: "SwitchField",
+                });
+                break;
             case StructureType.Structure:
             case StructureType.StructureWithOptionalFields:
                 break;
         }
-        const fields: FieldInterfaceOptions[] = [];
+
+        let switchValue = 1;
+        let switchBit = 0;
+
+        const bitFields: { name: string, length?: number }[] | undefined = isUnion ? undefined : [];
 
         for (const fieldD of definition.fields!) {
 
-            const { schema, category, fieldTypeName } = (await resolveFieldType(session, fieldD.dataType, dataTypeFactory, cache))!;
+            const rt = (await resolveFieldType(session, fieldD.dataType, dataTypeFactory, cache))!;
+            if (!rt) {
+                console.log("convertDataTypeDefinitionToStructureTypeSchema cannot handle field", fieldD.name, "in", name);
+                continue;
+            }
+            const { schema, category, fieldTypeName } = rt;
+
             const field: FieldInterfaceOptions = {
                 fieldType: fieldTypeName!,
                 name: fieldD.name!,
                 schema,
             };
 
+            if (fieldD.isOptional) {
+                field.switchBit = switchBit++;
+                bitFields?.push({ name: fieldD.name! + "Specified", length: 1 });
+            }
+            if (isUnion) {
+                field.switchValue = switchValue;
+                switchValue += 1;
+            }
+
+            assert(fieldD.valueRank === -1 || fieldD.valueRank === 1 || fieldD.valueRank === 0);
             if (fieldD.valueRank === 1) {
                 field.isArray = true;
+            } else {
+                field.isArray = false;
             }
             field.category = category;
+            field.schema = schema;
             fields.push(field);
         }
 
@@ -960,12 +1203,13 @@ export async function convertDataTypeDefinitionToStructureTypeSchema(
 
         const os = new StructuredTypeSchema({
             baseType,
+            bitFields,
             fields,
             id: 0,
             name,
         });
-
-        return await _setupEncodings(session, dataTypeNodeId, os);
+        const structuredTypeSchema = await _setupEncodings(session, dataTypeNodeId, os);
+        return structuredTypeSchema;
     }
     throw new Error("Not Implemented");
 }

@@ -23,12 +23,12 @@ const endpointUri = "opc.tcp://localhost:48010";
 
         const client = OPCUAClient.create({
             applicationName: "ClientBrowseNextDemo",
-            connectionStrategy: { maxRetry: -1 },
+
             endpoint_must_exist: false,
             keepSessionAlive: true,
             requestedSessionTimeout: 60 * 1000,
-//            securityMode: MessageSecurityMode.SignAndEncrypt,
-//            securityPolicy: SecurityPolicy.Basic256,
+            //            securityMode: MessageSecurityMode.SignAndEncrypt,
+            //            securityPolicy: SecurityPolicy.Basic256,
             connectionStrategy: {
                 maxRetry: -1,
                 maxDelay: 500,
@@ -36,7 +36,6 @@ const endpointUri = "opc.tcp://localhost:48010";
 
             },
 
-            requestedSessionTimeout: 10000,
             certificateFile: "./certificates/client_certificate.pem",
             privateKeyFile: "./certificates/PKI/own/private/private_key.pem",
             defaultSecureTokenLifetime: 20000,

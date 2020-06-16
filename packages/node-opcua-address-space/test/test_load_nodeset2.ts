@@ -172,7 +172,7 @@ describe("testing NodeSet XML file loading", function (this: any) {
             .should.eql("Float");
 
         my3x3MatrixType.valueRank.should.eql(2);
-        my3x3MatrixType.arrayDimensions.should.eql([3, 3]);
+        my3x3MatrixType.arrayDimensions!.should.eql([3, 3]);
         (my3x3MatrixType as any).value.toString().should.eql(
             new Variant({
                 dataType: "Float",
@@ -183,7 +183,7 @@ describe("testing NodeSet XML file loading", function (this: any) {
         const myDoubleArrayType = addressSpace.findVariableType("MyDoubleArrayType", ns)!;
         myDoubleArrayType.browseName.toString().should.eql("1:MyDoubleArrayType");
         myDoubleArrayType.valueRank.should.eql(1);
-        myDoubleArrayType.arrayDimensions.should.eql([5]);
+        myDoubleArrayType.arrayDimensions!.should.eql([5]);
         (myDoubleArrayType as any).value
             .toString()
             .should.eql(new Variant({ dataType: "Double", value: [1, 2, 3, 4, 5] }).toString());
@@ -212,7 +212,7 @@ describe("testing NodeSet XML file loading", function (this: any) {
     });
 
     it("VV3 should load a nodeset from UAModeler", async () => {
-        const xml_file1 = path.join(__dirname, "../test_helpers/test_fixtures/mini.Node.Set2.xml");
+        const xml_file1 = nodesets.standard; // path.join(__dirname, "../test_helpers/test_fixtures/mini.Node.Set2.xml");
         const xml_file2 = path.join(__dirname, "../../../modeling/my_data_type.xml");
         const xml_files = [xml_file1, xml_file2];
         await generateAddressSpace(addressSpace, xml_files);
@@ -399,7 +399,6 @@ describe("testing NodeSet XML file loading", function (this: any) {
         console.log("Loaded !");
 
         const dataType = addressSpace.findDataType("3DFrame", 0)!;
-
 
     });
 

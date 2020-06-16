@@ -94,8 +94,6 @@ export * from "node-opcua-service-query";
 export * from "node-opcua-service-node-management";
 export { DiagnosticInfo } from "node-opcua-data-model";
 
-export { SecurityPolicy, ErrorCallback, MessageSecurityMode } from "node-opcua-secure-channel";
-
 // -----------------------------------------------------------------------------
 // Nodeset stuff
 // -----------------------------------------------------------------------------
@@ -127,15 +125,9 @@ export * from "node-opcua-service-filter";
 export * from "node-opcua-address-space";
 
 // filtering tools
-export { constructEventFilter } from "node-opcua-service-filter";
-
 export * from "node-opcua-transport";
 
-module.exports.OPCUADiscoveryServer = require("node-opcua-server-discovery").OPCUADiscoveryServer;
+export { OPCUADiscoveryServer } from "node-opcua-server-discovery";
 
-const address_space_for_conformance_testing = require("node-opcua-address-space-for-conformance-testing");
-
-module.exports.build_address_space_for_conformance_testing =
-    address_space_for_conformance_testing.build_address_space_for_conformance_testing;
-
-module.exports.install_optional_cpu_and_memory_usage_node = require("node-opcua-vendor-diagnostic").install_optional_cpu_and_memory_usage_node;
+export { build_address_space_for_conformance_testing } from "node-opcua-address-space-for-conformance-testing";
+export { install_optional_cpu_and_memory_usage_node } from "node-opcua-vendor-diagnostic";
